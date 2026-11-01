@@ -1,0 +1,25 @@
+services:
+  mysql-master:
+    image: mysql:8.0
+    container_name: mysql-master
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
+      MYSQL_REPL_USER: ${MYSQL_REPL_USER}
+      MYSQL_REPL_PASSWORD: ${MYSQL_REPL_PASSWORD}
+    volumes:
+      - mysql_master_data:/var/lib/mysql
+      - ./mysql/master/my.cnf:/etc/mysql/conf.d/my.cnf:ro
+    networks:
+      - mysql_net
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -uroot -p\"$$MYSQL_ROOT_PASSWORD\" --silent"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+networks:
+  mysql_net:
+    driver: bridge
+
+volumes:
+  mysql_master_data:
