@@ -103,5 +103,5 @@ docker compose ps   # esperar a que esté "healthy"
 
 | Fase | Responsable | Estado |
 |---|---|---|
-| 1. Infraestructura + maestro | ... | Completa |
+| 1. Infraestructura + maestro | Eddie Santiago Delgado Campo | Completa |
 | 2 a 6 | ... | Pendiente |
