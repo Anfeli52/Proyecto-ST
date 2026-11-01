@@ -22,7 +22,7 @@ Repartir las **lecturas** entre varios nodos MySQL esclavos usando NGINX en modo
  │                 ┌──────┴───────┐                             │
  │                 ▼              ▼                             │
  │        ┌─────────────┐ ┌─────────────┐                       │
- │        │ mysql-slave1│ │ mysql-slave2│  [pendiente]          │
+ │        │ mysql-slave1│ │ mysql-slave2│                       │
  │        └──────▲──────┘ └──────▲──────┘                       │
  │               │ replicación   │ (lee el binlog               │
  │               │  usuario: replicador                         │
@@ -121,4 +121,5 @@ docker compose ps   # esperar a que esté "healthy"
 | Fase | Responsable | Estado |
 |---|---|---|
 | 1. Infraestructura + maestro | Eddie Santiago Delgado Campo | Completa |
-| 2 a 6 | ... | Pendiente |
+| 2. Replicación: Esclavos + Verificación | Eddie Santiago Delgado Campo | Completa |
+| 3 a 6 | ... | Pendiente |
