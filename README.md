@@ -54,6 +54,23 @@ Repartir las **lecturas** entre varios nodos MySQL esclavos usando NGINX en modo
 - **GTID** en lugar de posiciones de binlog: simplifica configurar los esclavos.
 - **`binlog_format=ROW`**: replica los cambios de filas, evitando resultados distintos entre servidores.
 
+## Replicación (esclavos)
+
+Verificar el estado de la replicación en cualquier momento:
+
+```bash
+./scripts/verify-replication.sh
+```
+
+Los scripts de `mysql/slave-init/` solo se ejecutan cuando el volumen del
+esclavo está vacío. Para reconfigurar un esclavo desde cero:
+
+```bash
+docker compose rm -sf mysql-slave1
+docker volume rm <proyecto>_mysql_slave1_data
+docker compose up -d
+```
+
 ## Estructura del repositorio
 
 ```
@@ -77,7 +94,7 @@ Las contraseñas **no están en el repositorio**. Cada persona debe generar su p
    cat > .env <<EOF
    MYSQL_ROOT_PASSWORD=$(openssl rand -hex 24)
    MYSQL_REPL_USER=replicador
-   MYSQL_REPL_PASSWORD=$(openssl rand -hex 24)
+   MYSQL_REPL_PASSWORD=$(openssl rand -hex 12)
    EOF
    chmod 600 .env
    ```
