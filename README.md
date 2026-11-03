@@ -44,7 +44,7 @@ Repartir las **lecturas** entre varios nodos MySQL esclavos usando NGINX en modo
 | Usuario `replicador` | Cuenta con permisos mínimos (`REPLICATION SLAVE`, `REPLICATION CLIENT`) que usarán los esclavos | Completo (Fase 1) |
 | `mysql_net` | Red interna: los contenedores se encuentran por nombre de servicio | Completo (Fase 1) |
 | `mysql_master_data` | Volumen persistente: los datos sobreviven a `down`/`up` | Completo (Fase 1) |
-| Esclavos | Copian al maestro y atienden lecturas | Pendiente |
+| Esclavos | Copian al maestro y atienden lecturas | Completo (Fase 2) |
 | NGINX stream | Reparte las conexiones de lectura entre los esclavos | Pendiente |
 
 ### Decisiones de diseño
