@@ -122,4 +122,5 @@ docker compose ps   # esperar a que esté "healthy"
 |---|---|---|
 | 1. Infraestructura + maestro | Eddie Santiago Delgado Campo | Completa |
 | 2. Replicación: Esclavos + Verificación | Eddie Santiago Delgado Campo | Completa |
-| 3 a 6 | ... | Pendiente |
+| 3. NGINX: Balanceo de lectura/escritura | Christian David Home Acero | En Proceso |
+| 4 a 6 | ... | Pendiente |
