@@ -79,6 +79,18 @@ services:
     networks:
       - mysql_net  
 
+  sysbench:
+    image: severalnines/sysbench
+    container_name: sysbench
+    profiles: ["bench"]
+    entrypoint: ["sysbench"]
+    depends_on:
+      nginx-lb:
+        condition: service_started
+    environment:
+      SYSBENCH_PASSWORD: ${SYSBENCH_PASSWORD}
+    networks:
+      - mysql_net
 
 networks:
   mysql_net:

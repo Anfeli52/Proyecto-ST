@@ -13,33 +13,34 @@ Repartir las **lecturas** entre varios nodos MySQL esclavos usando NGINX en modo
 
 ```
                  Host (solo Docker, nada más instalado)
- ┌───────────────────────────────────────────────────────────────┐
- │                  Red Docker: mysql_net (bridge)               │
- │                                                               │
- │  Escrituras ──► :3307 ─┐                                      │
- │  Lecturas   ──► :3308 ─┤   ┌─────────────────┐                │
- │  (únicos puertos       └──►│    nginx-lb     │  [Fase 3 ✔]    │
- │   publicados al host)      │  NGINX stream   │                │
- │                            └───┬─────────┬───┘                │
- │                  :3307 (write) │         │ :3308 (read,       │
- │                                │         │  least_conn)       │
- │                                │   ┌─────┴───────┐            │
- │                                │   ▼             ▼            │
- │                                │ ┌───────────┐ ┌───────────┐  │
- │                                │ │mysql-slave1│ │mysql-slave2│ │
- │                                │ │server-id 2│ │server-id 3│  │
- │                                │ │ read-only │ │ read-only │  │
- │                                │ └─────▲─────┘ └─────▲─────┘  │
- │                                │       │ replicación │        │
- │                                ▼       │ (GTID)      │        │
- │                         ┌──────────────┴─────────────┘        │
- │                         │  mysql-master                        │
- │                         │  server-id = 1, binlog + GTID        │
- │                         │  puerto 3306 (solo interno)          │
- │                         └──────────────┬──────────────         │
- │                                        │                       │
- │                          volumen: mysql_master_data            │
- └───────────────────────────────────────────────────────────────┘
+ ┌───────────────────────────────────────────────────────────────────┐
+ │                   Red Docker: mysql_net (bridge)                  │
+ │                                                                   │
+ │  Escrituras ──► :3307 ─┐                                          │
+ │  Lecturas   ──► :3308 ─┤    ┌─────────────────┐                   │
+ │  (únicos puertos       └───►│    nginx-lb     │  [Fase 3 ✔]      │
+ │   publicados al host)       │  NGINX stream   │                   │
+ │                             └───┬─────────┬───┘                   │
+ │  ┌───────────────┐  3307/3308   │         │                       │
+ │  │   sysbench    │ ─────────────┘         │ :3308 (read,          │
+ │  │ perfil "bench"│  prepare → 3307        │  least_conn)          │
+ │  │ [Fase 5 ✔]   │  run     → 3308        │                       │
+ │  └───────────────┘                  ┌─────┴───────┐               │
+ │                                     ▼             ▼               │
+ │                :3307 (write)  ┌────────────┐ ┌────────────┐       │
+ │                      │        │mysql-slave1│ │mysql-slave2│       │
+ │                      │        │server-id 2 │ │server-id 3 │       │
+ │                      │        │ read-only  │ │ read-only  │       │
+ │                      │        └─────▲──────┘ └─────▲──────┘       │
+ │                      ▼              │ replicación  │              │
+ │               ┌──────────────────── │ (GTID) ──────┘              │
+ │               │  mysql-master                                     │
+ │               │  server-id = 1, binlog + GTID                     │
+ │               │  puerto 3306 (solo interno)                       │
+ │               └──────────────────────┬─────────────               │
+ │                                      │                            │
+ │                        volumen: mysql_master_data                 │
+ └───────────────────────────────────────────────────────────────────┘
 ```
 
 ### Componentes
@@ -52,6 +53,7 @@ Repartir las **lecturas** entre varios nodos MySQL esclavos usando NGINX en modo
 | `mysql_master_data` | Volumen persistente: los datos sobreviven a `down`/`up` | Completo (Fase 1) |
 | `mysql-slave1` / `mysql-slave2` | Copian al maestro y atienden lecturas (`server-id` 2 y 3, `read_only=1`, `super_read_only=1`) | Completo (Fase 2) |
 | `nginx-lb` | NGINX en modo stream: puerto 3307 → maestro, puerto 3308 → esclavos con `least_conn` | Completo (Fase 3) |
+| `sysbench` | Generador de carga para los benchmarks; solo corre bajo demanda (perfil `bench`) | Completo (Fase 5) |
 
 ### Decisiones de diseño
 
@@ -171,6 +173,109 @@ docker logs nginx-lb 2>&1 | tail
 - Para escribir, usa siempre el puerto 3307. La aplicación debería usar un usuario
   sin permisos de escritura en el puerto 3308.
 
+## Benchmark con Sysbench
+
+[Sysbench](https://github.com/akopytov/sysbench) genera carga artificial para medir el rendimiento. Aquí se usa el
+script `oltp_read_only` (transacciones de solo lectura típicas de una aplicación web). Corre como servicio
+`sysbench` del `docker-compose.yml`, bajo el perfil `bench`: **no se levanta con `docker compose up -d`**, solo
+cuando se invoca con `docker compose run --rm sysbench <argumentos>`.
+
+### 1. Preparación
+
+El cliente de Sysbench es de MariaDB y no soporta `caching_sha2_password` (el método por defecto de MySQL 8;
+da `error 2059`). Se crea un usuario dedicado con `mysql_native_password`, **en el maestro**, y la replicación lo
+copia a los esclavos. Su contraseña es `SYSBENCH_PASSWORD` del `.env`.
+
+```bash
+set -a; . ./.env; set +a    # carga las variables del .env en la shell (bash/zsh)
+
+docker exec mysql-master sh -c "mysql -uroot -p\"\$MYSQL_ROOT_PASSWORD\" -e \"
+  CREATE DATABASE IF NOT EXISTS sbtest;
+  CREATE USER IF NOT EXISTS 'sbtest'@'%' IDENTIFIED WITH mysql_native_password BY '$SYSBENCH_PASSWORD';
+  GRANT ALL ON sbtest.* TO 'sbtest'@'%';\""
+```
+
+### 2. Cargar el dataset (1.000.000 de filas)
+
+Siempre por el puerto **3307** (maestro): los esclavos son `super_read_only`. La replicación lo copia a ambos.
+
+```bash
+docker compose run --rm sysbench oltp_read_only \
+  --mysql-host=nginx-lb --mysql-port=3307 --mysql-user=sbtest --mysql-password=$SYSBENCH_PASSWORD \
+  --mysql-db=sbtest --tables=1 --table-size=1000000 prepare
+```
+
+Comprobar que los tres nodos tienen todas las filas (debe dar 1000000 en cada uno):
+
+```bash
+./scripts/verify-replication.sh
+for n in mysql-master mysql-slave1 mysql-slave2; do
+  docker exec $n sh -c 'mysql -uroot -p"$MYSQL_ROOT_PASSWORD" -N -B -e "SELECT COUNT(*) FROM sbtest.sbtest1"' 2>/dev/null
+done
+```
+
+### 3. Benchmark de solo lectura (10 hilos, 60 s)
+
+Por el puerto de lectura de NGINX (**3308**):
+
+```bash
+docker compose run --rm sysbench oltp_read_only \
+  --mysql-host=nginx-lb --mysql-port=3308 --mysql-user=sbtest --mysql-password=$SYSBENCH_PASSWORD \
+  --mysql-db=sbtest --tables=1 --table-size=1000000 \
+  --threads=10 --time=60 --report-interval=10 run
+```
+
+Parámetros: `--threads` = conexiones/clientes simultáneos; `--time` = duración en segundos;
+`--report-interval` = imprime TPS y latencia cada N s. Para la línea de comparación, la misma prueba directa a un
+solo nodo: `--mysql-host=mysql-slave1 --mysql-port=3306`.
+
+Métricas: **TPS** = transacciones completas por segundo; **QPS** = consultas por segundo (cada transacción tiene
+varias); **latencia** = tiempo por transacción (promedio y percentil 95, el valor que no supera el 95 % de las
+transacciones). Más TPS y menos latencia es mejor.
+
+Para ver el reparto de `least_conn` durante la prueba (deben ser 5 y 5):
+
+```bash
+docker exec mysql-slave1 sh -c 'mysql -uroot -p"$MYSQL_ROOT_PASSWORD" -N -B -e "SELECT COUNT(*) FROM information_schema.processlist WHERE user=\"sbtest\""' 2>/dev/null
+docker exec mysql-slave2 sh -c 'mysql -uroot -p"$MYSQL_ROOT_PASSWORD" -N -B -e "SELECT COUNT(*) FROM information_schema.processlist WHERE user=\"sbtest\""' 2>/dev/null
+```
+
+Para repetir la comparación completa (vía NGINX, directo a un nodo y, con `-u`, un solo esclavo vía NGINX) con un solo comando:
+
+```bash
+./scripts/benchmark-lectura.sh              # 10 hilos, 60 s por prueba
+./scripts/benchmark-lectura.sh -t 64 -d 30  # otra carga
+./scripts/benchmark-lectura.sh -u           # añade "1 esclavo vía NGINX"
+```
+
+Comprueba antes que el dataset está completo en los tres nodos y muestra una tabla con TPS, QPS y latencias.
+
+Limpiar el dataset al terminar (por el puerto 3307): sustituye `run` por `cleanup`.
+
+### 4. Resultados obtenidos
+
+Solo lectura, 1 tabla de 1.000.000 de filas, 0 errores en todas las pruebas:
+
+| Hilos | Vía NGINX (2 esclavos) | Vía NGINX (1 esclavo) | Directo a 1 esclavo |
+|---|---|---|---|
+| 10 (60 s) | 5174 TPS · avg 1,93 ms · p95 2,52 ms | 4927 TPS · avg 2,03 ms · p95 2,76 ms | 8014 TPS · avg 1,25 ms · p95 1,82 ms |
+| 64 (30 s) | 5136 TPS · avg 12,45 ms · p95 23,10 ms | 5358 TPS · avg 11,94 ms · p95 23,52 ms | 7791 TPS · avg 8,21 ms · p95 17,63 ms |
+| 128 (30 s) | 4873 TPS · avg 26,25 ms · p95 48,34 ms | 4977 TPS · avg 25,70 ms · p95 53,85 ms | 7321 TPS · avg 17,47 ms · p95 39,65 ms |
+
+La columna "1 esclavo vía NGINX" se midió con un NGINX temporal que apuntaba solo a `mysql-slave1`.
+
+### 5. Interpretación y limitaciones
+
+- **El reparto funciona**: con 10 hilos hubo 5 conexiones en cada esclavo.
+- **El proxy tiene un costo (~35 % de TPS)**: pasar por NGINX rinde menos que ir directo a un nodo.
+- **Dos esclavos no superan a uno en este entorno**: todos los contenedores (MySQL, NGINX y Sysbench) comparten
+  la CPU, RAM y disco del mismo host, así que un segundo esclavo no añade capacidad real, solo reparte la
+  existente. El balanceo de lectura aumenta el rendimiento cuando cada esclavo corre en hardware distinto y un solo
+  nodo es el cuello de botella.
+- Más hilos no aumentan el TPS una vez saturado el servidor, solo suben la latencia.
+- Los valores absolutos dependen de la máquina y de la carga del momento; la comparación es válida porque todas las
+  pruebas usaron los mismos parámetros en el mismo equipo.
+
 ## Estructura del repositorio
 
 ```
@@ -184,7 +289,9 @@ docker logs nginx-lb 2>&1 | tail
 ├── nginx/
 │   └── nginx.conf
 └── scripts/
-    └── verify-replication.sh
+    ├── verify-replication.sh
+    ├── test-fase4-vivo.sh
+    └── benchmark-lectura.sh
 ```
 
 ## Requisitos
@@ -216,6 +323,7 @@ Las contraseñas **no están en el repositorio**. Cada persona debe generar su p
    | `MYSQL_ROOT_PASSWORD` | Administrador de los nodos MySQL |
    | `MYSQL_REPL_USER` | Usuario que usarán los esclavos para replicar |
    | `MYSQL_REPL_PASSWORD` | Contraseña de ese usuario |
+   | `SYSBENCH_PASSWORD` | Contraseña del usuario `sbtest` (Fase 5). Genera con `echo "SYSBENCH_PASSWORD=$(openssl rand -hex 12)" >> .env` |
 
 ## Puesta en marcha
 
@@ -232,4 +340,6 @@ docker compose ps   # esperar a que los 4 servicios estén "Up" y los MySQL "hea
 | 1. Infraestructura + maestro | Eddie Santiago Delgado Campo | Completa |
 | 2. Replicación: Esclavos + Verificación | Eddie Santiago Delgado Campo | Completa |
 | 3. NGINX: Balanceo de lectura/escritura | Christian David Home Acero | Completa |
-| 4 a 6 | ... | Pendiente |
+| 4. Health checks y tolerancia a fallos | Cesar Andŕes Díaz Jimenez | Completa |
+| 5. Sysbench: preparación y pruebas de solo lectura | Andrés Felipe Medina Díaz | Completa |
+| 6 | ... | Pendiente |
