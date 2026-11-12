@@ -340,6 +340,6 @@ docker compose ps   # esperar a que los 4 servicios estén "Up" y los MySQL "hea
 | 1. Infraestructura + maestro | Eddie Santiago Delgado Campo | Completa |
 | 2. Replicación: Esclavos + Verificación | Eddie Santiago Delgado Campo | Completa |
 | 3. NGINX: Balanceo de lectura/escritura | Christian David Home Acero | Completa |
-| 4. Health checks y tolerancia a fallos | Cesar Andŕes Díaz Jimenez | Completa |
+| 4. Health checks y tolerancia a fallos | Cesar Andrés Díaz Jimenez | Completa |
 | 5. Sysbench: preparación y pruebas de solo lectura | Andrés Felipe Medina Díaz | Completa |
 | 6 | ... | Pendiente |
