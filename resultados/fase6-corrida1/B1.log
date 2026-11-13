@@ -1,0 +1,53 @@
+ Container mysql-slave2 Running 
+ Container nginx-lb Running 
+ Container mysql-master Running 
+ Container mysql-slave1 Running 
+ Container mysql-master Waiting 
+ Container mysql-master Waiting 
+ Container mysql-master Healthy 
+ Container mysql-master Healthy 
+ Container mysql-slave1 Waiting 
+ Container mysql-slave2 Waiting 
+ Container mysql-master Waiting 
+ Container mysql-slave1 Healthy 
+ Container mysql-master Healthy 
+ Container mysql-slave2 Healthy 
+ Container proyecto-st-sysbench-run-293b7082f7d6 Creating 
+ Container proyecto-st-sysbench-run-293b7082f7d6 Created 
+sysbench 1.0.17 (using bundled LuaJIT 2.1.0-beta2)
+
+Running the test with following options:
+Number of threads: 10
+Initializing random number generator from current time
+
+
+Initializing worker threads...
+
+Threads started!
+
+SQL statistics:
+    queries performed:
+        read:                            105392
+        write:                           30112
+        other:                           15056
+        total:                           150560
+    transactions:                        7528   (125.34 per sec.)
+    queries:                             150560 (2506.89 per sec.)
+    ignored errors:                      0      (0.00 per sec.)
+    reconnects:                          0      (0.00 per sec.)
+
+General statistics:
+    total time:                          60.0576s
+    total number of events:              7528
+
+Latency (ms):
+         min:                                   34.33
+         avg:                                   79.76
+         max:                                  226.56
+         95th percentile:                      118.92
+         sum:                               600420.75
+
+Threads fairness:
+    events (avg/stddev):           752.8000/21.54
+    execution time (avg/stddev):   60.0421/0.01
+
