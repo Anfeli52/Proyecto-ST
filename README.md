@@ -298,52 +298,50 @@ Para imitar a una aplicación real que usa los dos puertos, la prueba dividida l
 
 ### Resultados (10 hilos, 60 s, 0 errores en todas las pruebas)
 
-Medidos en un equipo de 8 núcleos y 7,4 GB de RAM compartidos por todos los contenedores. Valores de la corrida 2
-(la corrida 1 quedó en `resultados/fase6-corrida1/` y difiere menos de un 12 %).
+Medidos en la **misma máquina de la Fase 5** (12 núcleos, 31 GB de RAM compartidos por todos los contenedores). Dos corridas
+completas (`resultados/fase6-corrida1/` y `resultados/fase6/`); se muestra el promedio de TPS y latencias de la corrida 2.
+Entre corridas la diferencia es como máximo del 11 % (menos del 7 % en casi todos).
 
-| Esc. | Escenario | TPS | QPS | avg (ms) | p95 (ms) |
-|---|---|---|---|---|---|
-| A1 | Lectura vía NGINX :3308 (2 esclavos) | 768 | 12.295 | 13,00 | 18,61 |
-| A2 | Lectura directo al maestro (sin proxy) | 2.025 | 32.405 | 4,93 | 10,09 |
-| A3 | Lectura directo a 1 esclavo (sin proxy) | 2.139 | 34.231 | 4,67 | 8,58 |
-| B1 | Mixta `oltp_read_write` vía :3307 (todo al maestro) | 140 | 2.807 | 71,16 | 106,75 |
-| B2 | Mixta dividida: lecturas (8 hilos) vía :3308 | 557 | 8.913 | 14,35 | 26,20 |
-| B2 | Mixta dividida: escrituras (2 hilos) vía :3307 | 32 | 194 | 61,94 | 118,92 |
-| C1 | Lectura vía NGINX con **slave1 caído** | 776 | 12.424 | 12,87 | 18,28 |
-| C2 | Mixta dividida con slave1 caído: lecturas | 560 | 8.958 | 14,28 | 27,66 |
-| C2 | Mixta dividida con slave1 caído: escrituras | 43 | 259 | 46,40 | 66,84 |
+| Esc. | Escenario | TPS (prom.) | avg (ms) | p95 (ms) |
+|---|---|---|---|---|
+| A1 | Lectura vía NGINX :3308 (2 esclavos) | 4.754 | 2,12 | 2,71 |
+| A2 | Lectura directo al maestro (sin proxy) | 7.440 | 1,35 | 1,89 |
+| A3 | Lectura directo a 1 esclavo (sin proxy) | 7.333 | 1,37 | 1,93 |
+| B1 | Mixta `oltp_read_write` vía :3307 (todo al maestro) | 822 | 11,59 | 18,95 |
+| B2 | Mixta dividida: lecturas (8 hilos) vía :3308 | 2.991 | 2,72 | 4,10 |
+| B2 | Mixta dividida: escrituras (2 hilos) vía :3307 | 225 | 9,09 | 15,55 |
+| C1 | Lectura vía NGINX con **slave1 caído** | 4.545 | 2,22 | 2,81 |
+| C2 | Mixta dividida con slave1 caído: lecturas | 2.774 | 3,05 | 5,28 |
+| C2 | Mixta dividida con slave1 caído: escrituras | 261 | 7,94 | 12,98 |
 
-Para comparar con la Fase 5 (otro equipo, 12 núcleos) mira la tabla de la sección anterior: allí la lectura vía NGINX
-rindió 5.174 TPS y directo a un esclavo 8.014 TPS. Los valores absolutos no son comparables entre equipos; sí lo es la
-proporción entre escenarios del mismo equipo.
+Son coherentes con la Fase 5 (mismo equipo): allí la lectura vía NGINX rindió 5.174 TPS y directo a un esclavo 8.014 TPS
+(≈8 % más que aquí en ambos casos), con el mismo costo del proxy (−35 %).
 
 Extras medidos en el mismo script:
 
 | Medición | Resultado |
 |---|---|
-| Retraso de replicación bajo escrituras (máx. `Seconds_Behind_Master`) | 11 s (slave1) y 6 s (slave2) en B2; 8 s y 3 s en C2 |
-| Puesta al día de slave1 tras volver (GTID) | 7 s después de ~60 s de escrituras con slave1 caído |
-| Lectura directa a slave1, slave2 y maestro (20 s, diagnóstico) | 2.076 / 2.099 / 2.044 TPS: los tres nodos rinden igual |
+| Retraso de replicación bajo escrituras (máx. `Seconds_Behind_Master`) | 1 s en ambos esclavos, en B2 y en C2 |
+| Puesta al día de slave1 tras volver (GTID) | 0–1 s después de ~60 s de escrituras con slave1 caído |
 
-### Conclusiones preliminares
+### Conclusiones
 
-- **El balanceo no mejoró el throughput en este entorno; lo redujo.** Vía NGINX se obtuvo ~768 TPS frente a ~2.100 directo
-  a un nodo (−63 %; en la Fase 5, −35 %). Los tres nodos rinden igual, así que el cuello de botella es el salto por el
-  proxy, no MySQL. Además, dos esclavos (A1) rinden igual que uno solo (C1): todo comparte la misma CPU, por lo que un
-  segundo esclavo no añade capacidad real.
-- **Con un esclavo caído el rendimiento casi no cambió** (C1 ≈ A1, +1 %; las lecturas de C2 ≈ B2). Se explica porque el
-  sistema está limitado por el proxy y la CPU compartida, no por la cantidad de esclavos. Para las lecturas el costo de la
-  caída está en la latencia de detección (Fase 4: 3–5 s para los primeros clientes), que aquí quedó fuera de la medición
-  porque se hizo un calentamiento de 15 s con el nodo ya apagado. Las escrituras en C2 salieron más rápidas (43 vs 32 TPS)
-  porque con un esclavo menos hay menos replicación compitiendo por la CPU.
-- **Las escrituras son lo más caro**: la mixta completa (B1) llega a 140 TPS con ~71 ms de latencia media, y las 2 escrituras
-  de B2 apenas 32 TPS. Todas pasan por el único maestro, que además hace `fsync` del binlog en cada commit.
-- **Consistencia eventual visible**: bajo escritura continua los esclavos van entre 3 y 11 s por detrás del maestro. Una
-  aplicación que lea justo después de escribir puede no ver su propio cambio si lee por el 3308.
+- **El balanceo no mejoró el throughput en este entorno; lo redujo.** Vía NGINX se obtuvo ~4.750 TPS frente a ~7.330 directo
+  a un nodo (−35 %, igual que en la Fase 5). Los nodos rinden igual por separado, así que el cuello de botella es el salto
+  por el proxy, no MySQL. Además, dos esclavos (A1) rinden casi igual que uno solo (C1): todo comparte la misma CPU, por
+  lo que un segundo esclavo no añade capacidad real.
+- **Con un esclavo caído el rendimiento bajó muy poco** (C1 ≈ −4 % frente a A1). Para las lecturas el costo de la caída está
+  en la latencia de detección (Fase 4: 3–5 s para los primeros clientes), que aquí quedó fuera de la medición porque se hizo
+  un calentamiento de 15 s con el nodo ya apagado. Las escrituras en C2 salieron algo más rápidas (261 vs 225 TPS), con
+  probable menos replicación compitiendo por la CPU; no se aisló.
+- **Las escrituras son lo más caro**: la mixta completa (B1) llega a ~820 TPS con ~12 ms de latencia media, frente a ~7.300
+  TPS de la lectura pura. Todas pasan por el único maestro, que además hace `fsync` del binlog en cada commit.
+- **Consistencia eventual presente pero pequeña**: con 2 hilos de escritura los esclavos van como máximo 1 s por detrás. Una
+  aplicación que lea justo después de escribir puede aun así no ver su propio cambio si lee por el 3308.
 - **Alta disponibilidad de lectura sí se cumple**: 0 errores en todas las pruebas, incluida la que tuvo slave1 apagado,
   y slave1 se puso al día solo al volver.
 - **Limitaciones**: una máquina, dos corridas por escenario, cliente y servidores en el mismo host, un solo dataset de
-  1 tabla. Los absolutos dependen del equipo; la comparación es válida porque todo se midió en las mismas condiciones.
+  1 tabla y una sola carga de 10 hilos.
 
 ## Estructura del repositorio
 

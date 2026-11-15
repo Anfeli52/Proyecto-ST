@@ -30,10 +30,11 @@ Por qué se hizo así:
 
 ## Entorno de las pruebas
 
-- Equipo de **8 núcleos y 7,4 GB de RAM**, Docker sobre WSL2. Todos los contenedores (MySQL, NGINX y Sysbench) comparten esa CPU, RAM y disco, sin límites configurados.
+- **Misma máquina que la Fase 5**: PC con **12 núcleos y 32 GB de RAM**, Docker corriendo directamente sobre Linux (sin máquina virtual). Todos los contenedores (MySQL, NGINX y Sysbench) comparten esa CPU, RAM y disco, sin límites configurados. Carga media del equipo en reposo antes de empezar: ≈0,3.
 - MySQL 8.0.46, NGINX 1.27, Sysbench 1.0.17.
-- Dataset: tabla `sbtest.sbtest1` con 1.000.000 de filas, usuario `sbtest` (`mysql_native_password`).
-- **Los valores absolutos no son comparables con los de la Fase 5**, que se midió en otro equipo de 12 núcleos. Solo es válida la comparación entre escenarios del mismo equipo.
+- Dataset: tabla `sbtest.sbtest1` con 1.000.000 de filas, usuario `sbtest` (`mysql_native_password`), el mismo de la Fase 5.
+- **Los valores de esta fase son directamente comparables con los de la Fase 5**: mismo equipo, mismo dataset y mismos parámetros (10 hilos, 60 s).
+- Una versión anterior de esta fase se midió en otra máquina (8 núcleos, WSL2) y daba resultados muy dispares respecto a la Fase 5. Se **descartó por completo** y todas las pruebas se repitieron en el equipo de la Fase 5.
 
 ---
 
@@ -41,101 +42,22 @@ Por qué se hizo así:
 
 ### A. Preparación del entorno (Fases 1 a 5)
 
-La máquina de esta fase partía de cero, así que primero se levantó todo.
-
-#### 1. Revisar el proyecto y generar el `.env`
-
-```bash
-cat > .env <<EOF
-MYSQL_ROOT_PASSWORD=$(openssl rand -hex 24)
-MYSQL_REPL_USER=replicador
-MYSQL_REPL_PASSWORD=$(openssl rand -hex 12)
-SYSBENCH_PASSWORD=$(openssl rand -hex 12)
-EOF
-chmod 600 .env
-```
-
-- `openssl rand -hex N`: genera N bytes aleatorios en hexadecimal; sirve para contraseñas.
-- `chmod 600`: solo el dueño puede leer y escribir el archivo. El `.env` está en `.gitignore`.
-
-#### 2. Levantar los contenedores
-
-```bash
-docker compose up -d
-```
-
-- Falló: los esclavos salieron con `Exited (1)` (ver "Problemas comunes", problema 1).
-
-#### 3. Crear el usuario de replicación en el maestro
-
-```bash
-docker exec mysql-master sh -c 'mysql -uroot -p"$MYSQL_ROOT_PASSWORD" -e "CREATE USER IF NOT EXISTS \"$MYSQL_REPL_USER\"@\"%\" IDENTIFIED BY \"$MYSQL_REPL_PASSWORD\"; GRANT REPLICATION SLAVE, REPLICATION CLIENT ON *.* TO \"$MYSQL_REPL_USER\"@\"%\";"'
-```
-
-- `docker exec <contenedor> sh -c '...'`: ejecuta un comando dentro de un contenedor en marcha. Las comillas simples hacen que `$MYSQL_ROOT_PASSWORD` se lea del entorno del contenedor y no de la terminal.
-- `CREATE USER IF NOT EXISTS ... @"%"`: crea el usuario si no existe, accesible desde cualquier host de la red.
-- `GRANT REPLICATION SLAVE, REPLICATION CLIENT`: permisos mínimos para replicar y consultar el estado.
-
-#### 4. Recrear los esclavos con `super_read_only` desactivado solo en el primer arranque
-
-```bash
-docker compose rm -sf mysql-slave1 mysql-slave2 nginx-lb
-docker volume rm proyecto-st_mysql_slave1_data proyecto-st_mysql_slave2_data
-docker compose -f docker-compose.yml -f override.yml up -d mysql-slave1 mysql-slave2
-```
-
-- `compose rm -sf`: detiene y elimina los contenedores sin pedir confirmación.
-- `docker volume rm`: borra los volúmenes de los esclavos, que habían quedado a medio inicializar. **Solo los de los esclavos, nunca el del maestro.**
-- `f docker-compose.yml -f override.yml`: aplica un archivo adicional por encima del compose. El `override.yml` (fuera del repo) solo contenía `command: ["mysqld", "--super-read-only=OFF"]` para ambos esclavos.
-
-#### 5. Recrear con la configuración normal y verificar
+El entorno de la Fase 5 seguía creado (contenedores detenidos y volúmenes con los datos), así que no hubo que repetir la preparación.
 
 ```bash
 docker compose up -d
 ./scripts/verify-replication.sh
-```
-
-- Sin el override, los esclavos se recrean con el `my.cnf` del repo (con `super_read_only=1`). Los datos y la replicación se conservan porque viven en el volumen.
-- `verify-replication.sh` debe terminar con `RESULTADO: OK` en ambos esclavos.
-
-#### 6. Comprobar NGINX
-
-```bash
-for i in 1 2 3 4; do
-  docker exec mysql-master sh -c 'mysql -h nginx-lb -P 3308 -uroot -p"$MYSQL_ROOT_PASSWORD" -N -B -e "SELECT @@server_id, @@super_read_only"' 2>/dev/null
-done
-docker exec mysql-master sh -c 'mysql -h nginx-lb -P 3307 -uroot -p"$MYSQL_ROOT_PASSWORD" -N -B -e "SELECT @@server_id"' 2>/dev/null
-```
-
-- `h nginx-lb -P 3308`: se conecta a NGINX por el puerto de lectura. Debe alternar `server_id` 2 y 3.
-- Por el 3307 debe devolver `server_id` 1 (maestro).
-
-#### 7. Crear el usuario `sbtest` y cargar el dataset
-
-```bash
-set -a; . ./.env; set +a
-docker exec mysql-master sh -c "mysql -uroot -p\"\$MYSQL_ROOT_PASSWORD\" -e \"CREATE DATABASE IF NOT EXISTS sbtest; CREATE USER IF NOT EXISTS 'sbtest'@'%' IDENTIFIED WITH mysql_native_password BY '$SYSBENCH_PASSWORD'; GRANT ALL ON sbtest.* TO 'sbtest'@'%';\""
-
-docker compose run --rm -T sysbench oltp_read_only \
-  --mysql-host=nginx-lb --mysql-port=3307 --mysql-user=sbtest --mysql-password=$SYSBENCH_PASSWORD \
-  --mysql-db=sbtest --tables=1 --table-size=1000000 prepare
-```
-
-- `set -a; . ./.env; set +a`: carga las variables del `.env` en la shell y las exporta.
-- `IDENTIFIED WITH mysql_native_password`: el cliente de Sysbench es de MariaDB y no soporta el método por defecto de MySQL 8 (`caching_sha2_password`).
-- `prepare` va por el **3307** (maestro): los esclavos son `super_read_only`. La replicación copia luego los datos.
-- `T`: desactiva la terminal interactiva, necesario para ejecutar sin TTY.
-
-#### 8. Verificar el dataset en los tres nodos
-
-```bash
-./scripts/verify-replication.sh | grep -E "RESULTADO|GTID al día"
 for n in mysql-master mysql-slave1 mysql-slave2; do
   docker exec $n sh -c 'mysql -uroot -p"$MYSQL_ROOT_PASSWORD" -N -B -e "SELECT COUNT(*) FROM sbtest.sbtest1"' 2>/dev/null
 done
+uptime
 ```
 
-- Debe dar `1000000` en cada nodo. Justo después del `prepare` el verificador dio `FALLO` por el retraso de replicación; diez segundos después dio `OK` (ver "Problemas comunes", problema 2).
+- `up -d`: reutiliza los contenedores y volúmenes existentes y espera a los health checks.
+- `verify-replication.sh`: debe dar `RESULTADO: OK` en ambos esclavos (así fue).
+- El `COUNT(*)` debe dar `1000000` en los tres nodos (así fue) y `uptime` confirma que la máquina está en reposo antes de medir.
+
+Si se parte de una máquina nueva, la preparación completa (`.env`, usuario `replicador`, usuario `sbtest` y `prepare` del dataset) está en las Fases 1 a 5.
 
 ### B. Paso 1 — Benchmark mixto (10 hilos, 60 s)
 
@@ -208,24 +130,9 @@ SELECT GTID_SUBSET('<gtid_executed del maestro>', @@global.gtid_executed);   -- 
 
 - `GTID_SUBSET(a, b)` devuelve 1 si todo el conjunto `a` está contenido en `b`. Es más fuerte que mirar solo el retraso en segundos.
 
-#### Diagnóstico directo a cada nodo (20 s)
+#### Lectura directa a cada nodo
 
-Se hizo porque la lectura vía NGINX (≈770 TPS) estaba muy por debajo de lo documentado en la Fase 5 (≈5.100 TPS):
-
-```bash
-for h in mysql-slave1 mysql-slave2 mysql-master; do
-  docker compose run --rm -T sysbench oltp_read_only --mysql-host=$h --mysql-port=3306 \
-    --mysql-user=sbtest --mysql-password=$SYSBENCH_PASSWORD --mysql-db=sbtest \
-    --tables=1 --table-size=1000000 --threads=10 --time=20 run
-done
-docker stats --no-stream --format '{{.Name}} cpu={{.CPUPerc}} mem={{.MemUsage}}'
-uptime
-```
-
-- `-mysql-port=3306` y el nombre del nodo: se salta NGINX y va directo al contenedor.
-- `docker stats --no-stream`: foto del uso de CPU y memoria de cada contenedor.
-- `uptime`: la carga media del equipo (aparecía en ≈10 con solo 8 núcleos).
-- Resultado: los tres nodos rindieron igual (≈2.070 TPS), por lo que el cuello de botella está en el salto por NGINX. Esa medición se incorporó al script como escenario A3.
+No hizo falta un diagnóstico aparte: los escenarios A2 (directo al maestro) y A3 (directo a un esclavo) del script ya dan la línea base sin proxy. Ambos rinden prácticamente igual (≈7.300–7.500 TPS), así que MySQL rinde igual en cualquier nodo y la diferencia con A1 es el costo del salto por NGINX.
 
 #### Verificación final
 
@@ -242,33 +149,32 @@ done
 
 ## Tabla comparativa final de métricas
 
-### Esta fase (10 hilos, 60 s, equipo de 8 núcleos, 0 errores en todas las pruebas)
+### Esta fase (10 hilos, 60 s, equipo de 12 núcleos, 0 errores en todas las pruebas)
 
-Valores de la corrida 2 (la corrida 1 difiere como máximo un 12 %).
+Dos corridas completas del script en el mismo equipo. Se muestra el promedio de TPS y los valores de la corrida 2 para el resto; los logs de cada corrida están en `resultados/fase6-corrida1/` y `resultados/fase6/`.
 
-| Esc. | Escenario | Hilos | TPS | QPS | avg (ms) | p95 (ms) | max (ms) |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| A1 | Lectura vía NGINX :3308 (2 esclavos) | 10 | 768 | 12.295 | 13,00 | 18,61 | 50,69 |
-| A2 | Lectura directo al maestro (sin proxy) | 10 | 2.025 | 32.405 | 4,93 | 10,09 | 62,30 |
-| A3 | Lectura directo a 1 esclavo (sin proxy) | 10 | 2.139 | 34.231 | 4,67 | 8,58 | 58,48 |
-| B1 | Mixta `oltp_read_write` vía :3307 (todo al maestro) | 10 | 140 | 2.807 | 71,16 | 106,75 | 251,73 |
-| B2 | Mixta dividida: lecturas vía :3308 | 8 | 557 | 8.913 | 14,35 | 26,20 | 187,36 |
-| B2 | Mixta dividida: escrituras vía :3307 | 2 | 32 | 194 | 61,94 | 118,92 | 428,78 |
-| C1 | Lectura vía NGINX con **slave1 caído** | 10 | 776 | 12.424 | 12,87 | 18,28 | 59,31 |
-| C2 | Dividida con slave1 caído: lecturas | 8 | 560 | 8.958 | 14,28 | 27,66 | 114,42 |
-| C2 | Dividida con slave1 caído: escrituras | 2 | 43 | 259 | 46,40 | 66,84 | 202,89 |
+| Esc. | Escenario | Hilos | TPS c1 | TPS c2 | TPS prom. | avg (ms) | p95 (ms) | max (ms) |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| A1 | Lectura vía NGINX :3308 (2 esclavos) | 10 | 4.799 | 4.708 | 4.754 | 2,12 | 2,71 | 18,48 |
+| A2 | Lectura directo al maestro (sin proxy) | 10 | 7.488 | 7.393 | 7.440 | 1,35 | 1,89 | 16,55 |
+| A3 | Lectura directo a 1 esclavo (sin proxy) | 10 | 7.392 | 7.274 | 7.333 | 1,37 | 1,93 | 18,03 |
+| B1 | Mixta `oltp_read_write` vía :3307 (todo al maestro) | 10 | 782 | 862 | 822 | 11,59 | 18,95 | 136,08 |
+| B2 | Mixta dividida: lecturas vía :3308 | 8 | 3.044 | 2.939 | 2.991 | 2,72 | 4,10 | 64,36 |
+| B2 | Mixta dividida: escrituras vía :3307 | 2 | 230 | 220 | 225 | 9,09 | 15,55 | 90,37 |
+| C1 | Lectura vía NGINX con **slave1 caído** | 10 | 4.595 | 4.496 | 4.545 | 2,22 | 2,81 | 20,53 |
+| C2 | Dividida con slave1 caído: lecturas | 8 | 2.928 | 2.619 | 2.774 | 3,05 | 5,28 | 61,91 |
+| C2 | Dividida con slave1 caído: escrituras | 2 | 270 | 252 | 261 | 7,94 | 12,98 | 226,68 |
 
-Corrida 1, para ver la variabilidad (TPS): A1 806 · A2 2.166 · B1 125 · B2 lecturas 551 / escrituras 36 · C1 775 · C2 lecturas 542 / escrituras 41.
+Las dos corridas difieren como máximo un 11 % en TPS (B1 y las lecturas de C2); en el resto, menos de un 7 %.
 
-### Extras medidos en la misma corrida
+### Extras medidos en las mismas corridas
 
 | Medición | Resultado |
 | --- | --- |
-| Retraso de replicación bajo escrituras (máx. `Seconds_Behind_Master`) | B2: 11 s (slave1) y 6 s (slave2). C2: 8 s y 3 s |
-| Puesta al día de slave1 al volver (GTID) | 7 s, tras ≈60 s de escrituras con slave1 caído |
-| Lectura directa a slave1 / slave2 / maestro (20 s, diagnóstico) | 2.076 / 2.099 / 2.044 TPS |
+| Retraso de replicación bajo escrituras (máx. `Seconds_Behind_Master`, muestreo cada 5 s) | 1 s en slave1 y 1 s en slave2, tanto en B2 como en C2, en ambas corridas |
+| Puesta al día de slave1 al volver (GTID) | 0 s (corrida 1) y 1 s (corrida 2), tras ≈60 s de escrituras con slave1 caído |
 
-### Fase 5 (solo lectura, equipo de 12 núcleos; otra máquina)
+### Fase 5 (solo lectura, mismo equipo de 12 núcleos)
 
 | Hilos | Vía NGINX (2 esclavos) | Vía NGINX (1 esclavo) | Directo a 1 esclavo |
 | --- | --- | --- | --- |
@@ -276,80 +182,65 @@ Corrida 1, para ver la variabilidad (TPS): A1 806 · A2 2.166 · B1 125 · B2 le
 | 64 (30 s) | 5136 TPS · avg 12,45 ms · p95 23,10 ms | 5358 TPS · avg 11,94 ms · p95 23,52 ms | 7791 TPS · avg 8,21 ms · p95 17,63 ms |
 | 128 (30 s) | 4873 TPS · avg 26,25 ms · p95 48,34 ms | 4977 TPS · avg 25,70 ms · p95 53,85 ms | 7321 TPS · avg 17,47 ms · p95 39,65 ms |
 
-### Costo del proxy: la proporción sí es comparable
+### Coherencia entre Fase 5 y Fase 6 (10 hilos, solo lectura)
 
-|  | Fase 5 (12 núcleos) | Fase 6 (8 núcleos) |
-| --- | --- | --- |
-| Directo a 1 esclavo | 8.014 TPS | 2.139 TPS |
-| Vía NGINX (2 esclavos) | 5.174 TPS | 768 TPS |
-| Pérdida por pasar por NGINX | −35 % | −64 % |
+| | Fase 5 | Fase 6 (promedio de 2 corridas) | Diferencia |
+| --- | --- | --- | --- |
+| Directo a 1 esclavo | 8.014 TPS | 7.333 TPS | −8 % |
+| Vía NGINX (2 esclavos) | 5.174 TPS | 4.754 TPS | −8 % |
+| Vía NGINX (1 esclavo) | 4.927 TPS | 4.545 TPS (C1, esclavo caído) | −8 % |
+| Pérdida por pasar por NGINX | −35 % | −35 % | igual |
+
+Las dos fases coinciden: ≈8 % menos de TPS en la Fase 6 (variación normal de una corrida a otra, otro momento y otras condiciones del equipo) y exactamente la misma proporción de costo del proxy.
 
 ---
 
-## Conclusiones preliminares
+## Conclusiones
 
-1. **El balanceo no mejoró el throughput en este entorno.** Vía NGINX se obtuvo ≈770 TPS frente a ≈2.100 directo a un nodo. Los tres nodos rinden igual por separado, así que el cuello de botella no es MySQL sino el salto por el proxy. El costo fue de −35 % en la Fase 5 y de −64 % en esta fase, porque en un equipo con menos núcleos el proxy compite más por la misma CPU.
-2. **Dos esclavos rinden igual que uno.** A1 (2 esclavos, 768 TPS) y C1 (1 esclavo vivo, 776 TPS) son equivalentes. Todos los contenedores comparten CPU, RAM y disco, así que un segundo esclavo reparte la capacidad existente en vez de añadir más. El balanceo de lectura aporta cuando cada esclavo corre en hardware distinto y un solo nodo es el cuello de botella.
-3. **Con un esclavo caído el rendimiento casi no cambió** (C1 ≈ A1, +1 %; las lecturas de C2 ≈ B2). Lo que el balanceador sí garantiza es la **disponibilidad**: 0 errores en todas las pruebas, incluida la que tuvo `slave1` apagado. El costo real de una caída está en la latencia de detección (3 a 5 s para los primeros clientes, Fase 4), que estas medias no incluyen porque se hizo un calentamiento con el nodo ya apagado.
-4. **Las escrituras mejoraron con un esclavo menos** (32 → 43 TPS en la prueba dividida). La hipótesis es que hay menos replicación compitiendo por la CPU; no se aisló con una prueba adicional.
-5. **Las escrituras son lo más caro y no escalan con el balanceo.** La mixta completa (B1) llegó a 140 TPS con ≈71 ms de latencia media. Todas pasan por el único maestro, que además persiste el binlog en cada commit.
-6. **Consistencia eventual visible.** Bajo escritura continua los esclavos fueron entre 3 y 11 s por detrás del maestro (máximo 11 s con solo 2 hilos de escritura). Una aplicación que lea justo después de escribir por el 3308 puede no ver su propio cambio.
-7. **La recuperación funciona sola.** Al volver, `slave1` se puso al día por GTID en 7 s, sin intervención manual.
+1. **El balanceo no mejoró el throughput en este entorno; lo redujo.** Vía NGINX se obtuvo ≈4.750 TPS frente a ≈7.330 directo a un nodo (−35 %, igual que en la Fase 5). Maestro y esclavo rinden igual por separado, así que el cuello de botella no es MySQL sino el salto por el proxy, que además comparte CPU con los nodos.
+2. **Dos esclavos rinden igual que uno.** A1 (2 esclavos, ≈4.750 TPS) y C1 (1 esclavo vivo, ≈4.545 TPS) son casi equivalentes, y en la Fase 5 también (5.174 y 4.927). Todos los contenedores comparten CPU, RAM y disco, así que un segundo esclavo reparte la capacidad existente en vez de añadir más. El balanceo de lectura aporta cuando cada esclavo corre en hardware distinto.
+3. **Con un esclavo caído el rendimiento bajó muy poco** (C1 ≈ −4 % frente a A1; lecturas de C2 ≈ −7 % frente a B2, en el borde del ruido entre corridas). Lo que el balanceador sí garantiza es la **disponibilidad**: 0 errores en todas las pruebas, incluida la que tuvo `slave1` apagado. El costo real de una caída está en la latencia de detección (3 a 5 s para los primeros clientes, Fase 4), que estas medias no incluyen porque se hizo un calentamiento con el nodo ya apagado.
+4. **Las escrituras de la prueba dividida fueron algo más rápidas con un esclavo menos** (≈225 → ≈261 TPS, +16 %). Es una diferencia mayor que la variabilidad entre corridas, pero no se aisló con una prueba adicional; la hipótesis es que hay menos replicación compitiendo por la CPU.
+5. **Las escrituras son lo más caro y no escalan con el balanceo.** La mixta completa (B1) llega a ≈820 TPS con ≈12 ms de latencia media, frente a ≈7.300 de la lectura pura. Todas pasan por el único maestro, que además persiste el binlog en cada commit.
+6. **Consistencia eventual presente pero pequeña.** Bajo escritura continua (2 hilos) los esclavos fueron como máximo 1 s por detrás del maestro. Una aplicación que lea justo después de escribir por el 3308 puede aun así no ver su propio cambio.
+7. **La recuperación funciona sola.** Al volver, `slave1` se puso al día por GTID en 0 a 1 s, sin intervención manual.
 
 ### Limitaciones
 
-- Una sola máquina y dos corridas por escenario; las diferencias menores a ≈12 % están dentro del ruido.
-- Cliente (Sysbench), proxy y servidores comparten el mismo host, y la carga media del equipo superó los 8 núcleos durante las pruebas.
-- Un solo dataset de 1 tabla y 1.000.000 de filas.
+- Una sola máquina y dos corridas por escenario; las diferencias menores a ≈11 % están dentro del ruido.
+- Cliente (Sysbench), proxy y servidores comparten el mismo host.
+- Un solo dataset de 1 tabla y 1.000.000 de filas, y una sola carga de 10 hilos (la Fase 5 sí probó 64 y 128).
+- Con solo 2 hilos de escritura el retraso de replicación es pequeño; con más hilos de escritura sería mayor y no se midió.
 - No se probó la caída del maestro ni un esclavo con la replicación rota (el health check de NGINX es solo TCP y lo seguiría considerando sano).
-- La causa exacta del costo tan alto del proxy en este equipo no se aisló: se midió el efecto, no se probó el mecanismo.
+- La causa exacta del costo del proxy no se aisló: se midió el efecto, no se probó el mecanismo.
 
 ---
 
 ## Problemas comunes y solución
 
-### 1. Los esclavos salen con `Exited (1)` en el primer arranque: `ERROR 1290 ... --super-read-only`
-
-- **Síntoma:** `docker compose up -d` terminó con `dependency failed to start: container mysql-slave1 exited (1)`. El log de `mysql-slave1` terminaba en `ERROR 1290 (HY000) at line 1: The MySQL server is running with the --super-read-only option so it cannot execute this statement`.
-- **Causa:** el `my.cnf` de los esclavos trae `super_read_only=1`. En un volumen vacío, la imagen de MySQL arranca un servidor temporal para fijar la contraseña de `root`, y con esa opción activa no puede escribir. En el proyecto original la opción se añadió después de que los esclavos ya existían, por eso nunca había fallado.
-- **Solución:** borrar los volúmenes de los esclavos (que quedaron a medio inicializar), levantarlos una vez con `-super-read-only=OFF` mediante un `override.yml` fuera del repo, y recrearlos después con la configuración normal (pasos 4 y 5 de los comandos). No se modificó ningún archivo del repositorio.
-- **Mejora pendiente para el equipo:** automatizar el primer arranque para que `docker compose up -d` funcione de una sola vez.
-
-### 2. Ningún archivo del repo crea el usuario `replicador`
+### 1. Ningún archivo del repo crea el usuario `replicador`
 
 - **Síntoma:** en una máquina nueva, los esclavos no pueden replicar.
 - **Causa:** el usuario se creó a mano en la Fase 1 y el README solo dice `docker compose up -d`.
-- **Solución:** crearlo en el maestro con `CREATE USER` / `GRANT` (paso 3). Es el mismo problema que describe la Fase 4; se recomienda un script de inicialización del maestro (`mysql/master-init/`).
+- **Solución:** crearlo en el maestro con `CREATE USER` / `GRANT` (ver Fase 1/5). Se recomienda un script de inicialización del maestro (`mysql/master-init/`).
 
-### 3. `verify-replication.sh` da `FALLO` justo después del `prepare`
-
-- **Síntoma:** tras cargar 1.000.000 de filas, ambos esclavos mostraban `GTID al día con maestro: no`, aunque `COUNT(*)` ya daba 1000000 en los tres nodos.
-- **Causa:** el `COUNT(*)` ya coincidía, pero la creación del índice secundario de `sbtest1` todavía se estaba replicando.
-- **Solución:** esperar unos segundos y volver a verificar: diez segundos después daba `OK`, con retraso 0. No era un error. Por eso `benchmark-mixto.sh` espera a que los GTID coincidan entre escenarios.
-
-### 4. Rendimiento de lectura muy inferior al de la Fase 5
-
-- **Síntoma:** la lectura vía NGINX daba ≈770–800 TPS, contra ≈5.100 documentados en la Fase 5.
-- **Causa:** no era un fallo. Es otro equipo (8 núcleos frente a 12) y el costo del proxy resultó mucho mayor (−64 % frente a −35 %). Se confirmó midiendo directo a cada nodo: los tres daban ≈2.070 TPS, así que MySQL no era el límite.
-- **Solución:** no comparar valores absolutos entre equipos, solo la proporción entre escenarios del mismo equipo. Se añadió la medición directa a un esclavo (A3) al script para que esa línea base quede siempre en la tabla.
-
-### 5. `oltp_read_write` no se puede repartir entre maestro y esclavos
+### 2. `oltp_read_write` no se puede repartir entre maestro y esclavos
 
 - **Síntoma:** al querer medir "lectura/escritura mixta con balanceo", todo el tráfico del script iba al maestro.
 - **Causa:** Sysbench usa una única conexión por hilo hacia un solo host, y NGINX trabaja en capa 4: no distingue `SELECT` de `INSERT`. Apuntar `oltp_read_write` al 3308 fallaría por `super_read_only`.
 - **Solución:** medir dos configuraciones: la mixta contra el 3307 (B1) y la prueba dividida con dos Sysbench simultáneos, uno de lectura al 3308 y uno de escritura al 3307 (B2). Esta última representa mejor a una aplicación real.
 
-### 6. La corrida de 5 s daba números muy bajos
+### 3. Resultados dispares entre la Fase 5 y la Fase 6 (resuelto)
 
-- **Síntoma:** en la corrida de humo, la lectura vía NGINX daba ≈720 TPS y los máximos de latencia eran irregulares.
-- **Causa:** con 5 s la prueba apenas sale del arranque (buffer pool frío, conexiones nuevas).
-- **Solución:** usarla solo para validar el script. Las corridas reales usan 60 s, con un calentamiento de 20 s previo que no se reporta.
+- **Síntoma:** la primera versión de la Fase 6 daba ≈770 TPS vía NGINX frente a ≈5.100 de la Fase 5, y un costo del proxy de −64 % frente a −35 %.
+- **Causa:** la Fase 6 se había medido en otra máquina (8 núcleos, WSL2, 7,4 GB), no comparable con la de la Fase 5.
+- **Solución:** descartar esos resultados y repetir toda la fase en la máquina de la Fase 5. Ahora ambas fases coinciden (ver "Coherencia entre Fase 5 y Fase 6").
 
-### 7. Detalles que no son errores
+### 4. Detalles que no son errores
 
-- Las notificaciones de "tarea completada" del lanzador en segundo plano aparecieron antes de que terminara el benchmark: avisaban de que el comando de lanzamiento había terminado, no de la prueba. Se esperó al marcador `done` del archivo de salida.
 - El mensaje `Using a password on the command line interface can be insecure` de `mysql` es solo un aviso; se descarta con `2>/dev/null`.
-- Los escenarios con `slave1` caído muestran `slave1=caído` en `lag.csv`; es esperado, no una falla del muestreador.
+- Los escenarios con `slave1` caído pueden mostrar `slave1=caído` en `lag.csv`; es esperado, no una falla del muestreador.
+- Si se repite una verificación de replicación justo después de una prueba de escritura, puede dar `FALLO` unos segundos hasta que los esclavos se pongan al día; por eso `benchmark-mixto.sh` espera a que los GTID coincidan entre escenarios.
 
 ---
 
@@ -367,7 +258,7 @@ Corrida 1, para ver la variabilidad (TPS): A1 806 · A2 2.166 · B1 125 · B2 le
 - [x]  Benchmark ejecutado: 10 hilos, 60 segundos, lectura/escritura mixta
 - [x]  TPS y latencia del benchmark mixto registrados
 - [x]  Prueba adicional ejecutada con un esclavo caído, midiendo el impacto en el rendimiento
-- [x]  Pruebas adicionales: retraso de replicación, puesta al día de slave1 y diagnóstico directo a cada nodo
+- [x]  Pruebas adicionales: retraso de replicación, puesta al día de slave1 y lectura directa sin proxy (A2 y A3)
 - [x]  Todas las métricas (Fase 5 y Fase 6) consolidadas en una tabla comparativa
-- [x]  Conclusiones preliminares redactadas sobre qué configuración rindió mejor y por qué
+- [x]  Conclusiones redactadas sobre qué configuración rindió mejor y por qué
 - [x]  README actualizado con los resultados finales y cómo reproducir todas las pruebas
