@@ -1,7 +1,7 @@
- Container nginx-lb Running 
- Container mysql-master Running 
  Container mysql-slave1 Running 
  Container mysql-slave2 Running 
+ Container nginx-lb Running 
+ Container mysql-master Running 
  Container mysql-master Waiting 
  Container mysql-master Waiting 
  Container mysql-master Healthy 
@@ -10,10 +10,10 @@
  Container mysql-master Waiting 
  Container mysql-slave1 Waiting 
  Container mysql-slave1 Healthy 
- Container mysql-slave2 Healthy 
  Container mysql-master Healthy 
- Container proyecto-st-sysbench-run-a4b90601f766 Creating 
- Container proyecto-st-sysbench-run-a4b90601f766 Created 
+ Container mysql-slave2 Healthy 
+ Container proyecto-st-sysbench-run-e12268816686 Creating 
+ Container proyecto-st-sysbench-run-e12268816686 Created 
 sysbench 1.0.17 (using bundled LuaJIT 2.1.0-beta2)
 
 Running the test with following options:
@@ -27,27 +27,27 @@ Threads started!
 
 SQL statistics:
     queries performed:
-        read:                            1701476
+        read:                            6210204
         write:                           0
-        other:                           243068
-        total:                           1944544
-    transactions:                        121534 (2025.32 per sec.)
-    queries:                             1944544 (32405.13 per sec.)
+        other:                           887172
+        total:                           7097376
+    transactions:                        443586 (7392.70 per sec.)
+    queries:                             7097376 (118283.15 per sec.)
     ignored errors:                      0      (0.00 per sec.)
     reconnects:                          0      (0.00 per sec.)
 
 General statistics:
-    total time:                          60.0065s
-    total number of events:              121534
+    total time:                          60.0018s
+    total number of events:              443586
 
 Latency (ms):
-         min:                                    2.07
-         avg:                                    4.93
-         max:                                   62.30
-         95th percentile:                       10.09
-         sum:                               599204.43
+         min:                                    0.56
+         avg:                                    1.35
+         max:                                   16.55
+         95th percentile:                        1.89
+         sum:                               599166.97
 
 Threads fairness:
-    events (avg/stddev):           12153.4000/342.15
-    execution time (avg/stddev):   59.9204/0.01
+    events (avg/stddev):           44358.6000/189.52
+    execution time (avg/stddev):   59.9167/0.00
 

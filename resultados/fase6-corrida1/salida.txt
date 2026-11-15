@@ -3,21 +3,22 @@ Sysbench Fase 6 | 10 hilos (dividida: 8 lectura + 2 escritura) | 60s por prueba 
 Esc  Carga                      Hilos      TPS       QPS  avg(ms)  p95(ms)   max(ms)   err
 --------------------------------------------------------------------------------------------
 # Todo sano
-A1   Lectura vía NGINX :3308       10   806.19  12898.98    12.40    17.63     55.80     0
-A2   Lectura directo al maestro    10  2166.11  34657.71     4.61     8.58     60.19     0
-B1   Mixta r/w :3307 (maestro)     10   125.34   2506.89    79.76   118.92    226.56     0
-B2     lecturas  -> :3308           8   550.95   8815.24    14.50    27.17    338.73     0
-B2     escrituras -> :3307          2    35.68    214.08    56.01    97.55    310.01     0
+A1   Lectura vía NGINX :3308       10  4799.28  76788.55     2.08     2.66     17.92     0
+A2   Lectura directo al maestro    10  7488.36 119813.79     1.33     1.86     15.75     0
+A3   Lectura directo a 1 esclavo    10  7391.76 118268.23     1.35     1.89     18.33     0
+B1   Mixta r/w :3307 (maestro)     10   781.61  15632.17    12.79    21.50    131.72     0
+B2     lecturas  -> :3308           8  3043.51  48696.21     2.63     3.89     50.30     0
+B2     escrituras -> :3307          2   230.25   1381.53     8.68    15.00    184.49     0
 # slave1 caído
-C1   Lectura vía NGINX (1 vivo)    10   774.65  12394.39    12.90    17.95     55.41     0
-C2     lecturas  -> :3308           8   541.97   8671.56    14.75    28.67    127.38     0
-C2     escrituras -> :3307          2    41.06    246.37    48.68    68.05    929.67     0
+C1   Lectura vía NGINX (1 vivo)    10  4594.57  73513.06     2.17     2.76     18.76     0
+C2     lecturas  -> :3308           8  2928.34  46853.51     2.73     4.10     70.11     0
+C2     escrituras -> :3307          2   270.44   1622.65     7.39    12.30    150.38     0
 
 # Reincorporación de slave1
-slave1 tardó 7s en ponerse al día (GTID) tras las escrituras hechas mientras estaba caído
+slave1 tardó 0s en ponerse al día (GTID) tras las escrituras hechas mientras estaba caído
 
 # Retraso de replicación (Seconds_Behind_Master) durante las escrituras: máximo por escenario
-  B2  slave1=9s  slave2=5s
-  C2  slave1=8s  slave2=4s
+  B2  slave1=1s  slave2=1s
+  C2  slave1=1s  slave2=1s
 
 TPS/QPS: más alto es mejor. Latencia: más baja es mejor. Logs crudos y CSV en resultados/fase6/
