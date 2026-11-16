@@ -7,7 +7,7 @@
 #   -u           incluir "un solo esclavo vía NGINX" (levanta un NGINX temporal)
 #
 # Mide, con los mismos parámetros:
-#   1. Vía NGINX          nginx-lb:3308       (2 esclavos, least_conn)
+#   1. Vía NGINX          nginx-lb:3308       (todos los esclavos, least_conn)
 #   2. Directo a 1 nodo   mysql-slave1:3306
 #   3. (con -u) 1 esclavo vía NGINX (NGINX temporal que apunta solo a slave1)
 #
@@ -30,12 +30,16 @@ done
 set -a; . ./.env; set +a
 [ -n "$SYSBENCH_PASSWORD" ] || { echo "Falta SYSBENCH_PASSWORD en .env."; exit 1; }
 
-for n in mysql-master mysql-slave1 mysql-slave2 nginx-lb; do
+SLAVES=$(docker ps -a --format '{{.Names}}' | grep -E '^mysql-slave[0-9]+$' | sort -V | tr '\n' ' ')
+NSL=$(echo $SLAVES | wc -w)
+[ "$NSL" -ge 1 ] || { echo "No se encontraron esclavos (mysql-slaveN)."; exit 1; }
+
+for n in mysql-master $SLAVES nginx-lb; do
   [ "$(docker inspect -f '{{.State.Running}}' $n 2>/dev/null)" = true ] || { echo "$n no está corriendo. Ejecuta: docker compose up -d"; exit 1; }
 done
 
-# El dataset debe estar completo en los tres nodos
-for n in mysql-master mysql-slave1 mysql-slave2; do
+# El dataset debe estar completo en todos los nodos
+for n in mysql-master $SLAVES; do
   c=$(docker exec $n sh -c 'mysql -uroot -p"$MYSQL_ROOT_PASSWORD" -N -B -e "SELECT COUNT(*) FROM sbtest.sbtest1"' 2>/dev/null)
   [ "$c" = "1000000" ] || { echo "$n no tiene el dataset completo (filas: ${c:-ninguna}). Ejecuta el prepare del README."; exit 1; }
 done
@@ -67,7 +71,7 @@ docker compose run --rm -T sysbench oltp_read_only \
   --mysql-host=nginx-lb --mysql-port=3308 --mysql-user=sbtest --mysql-password="$SYSBENCH_PASSWORD" \
   --mysql-db=sbtest --tables=1 --table-size=1000000 --threads="$THREADS" --time=10 run >/dev/null 2>&1
 
-bench nginx-lb 3308 "Vía NGINX (2 esclavos)"
+bench nginx-lb 3308 "Vía NGINX ($NSL esclavos)"
 bench mysql-slave1 3306 "Directo a 1 esclavo (slave1)"
 
 if [ $SOLO1 -eq 1 ]; then

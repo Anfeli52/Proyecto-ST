@@ -1,10 +1,10 @@
 #!/bin/bash
 # Uso: ./scripts/verify-replication.sh [esclavo1 esclavo2 ...]
-# Sin argumentos revisa mysql-slave1 y mysql-slave2.
+# Sin argumentos revisa mysql-slave1 a mysql-slave6.
 
 MASTER="mysql-master"
 SLAVES=("$@")
-[ ${#SLAVES[@]} -eq 0 ] && SLAVES=(mysql-slave1 mysql-slave2)
+[ ${#SLAVES[@]} -eq 0 ] && SLAVES=(mysql-slave1 mysql-slave2 mysql-slave3 mysql-slave4 mysql-slave5 mysql-slave6)
 
 # GTID ejecutados por el maestro, en una sola línea
 master_gtid=$(docker exec "$MASTER" sh -c 'mysql -uroot -p"$MYSQL_ROOT_PASSWORD" -N -B -e "SELECT @@global.gtid_executed"' 2>/dev/null | tr -d '\n')

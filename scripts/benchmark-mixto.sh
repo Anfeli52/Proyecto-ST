@@ -18,7 +18,9 @@
 # slave1 en ponerse al día al volver.
 #
 # Siempre vuelve a encender slave1 al terminar (también con Ctrl+C).
-# Salida: tabla por pantalla + resultados/fase6/ (logs crudos y resumen.csv).
+# Detecta solos los esclavos que existan (mysql-slave1, mysql-slave2, ...).
+# Salida: tabla por pantalla + carpeta OUT (por defecto resultados/fase6/; cámbiala con
+#   OUT=resultados/otra ./scripts/benchmark-mixto.sh) con logs crudos, resumen.csv y lag.csv.
 
 cd "$(dirname "$0")/.." || exit 1
 
@@ -37,18 +39,22 @@ RTHREADS=$((THREADS - WTHREADS))
 set -a; . ./.env; set +a
 [ -n "$SYSBENCH_PASSWORD" ] || { echo "Falta SYSBENCH_PASSWORD en .env."; exit 1; }
 
-for n in mysql-master mysql-slave1 mysql-slave2 nginx-lb; do
+SLAVES=$(docker ps -a --format '{{.Names}}' | grep -E '^mysql-slave[0-9]+$' | sort -V | tr '\n' ' ')
+NSL=$(echo $SLAVES | wc -w)
+[ "$NSL" -ge 2 ] || { echo "No se encontraron esclavos (mysql-slaveN)."; exit 1; }
+
+for n in mysql-master $SLAVES nginx-lb; do
   [ "$(docker inspect -f '{{.State.Running}}' $n 2>/dev/null)" = true ] || { echo "$n no está corriendo. Ejecuta: docker compose up -d"; exit 1; }
 done
-for n in mysql-master mysql-slave1 mysql-slave2; do
+for n in mysql-master $SLAVES; do
   c=$(docker exec $n sh -c 'mysql -uroot -p"$MYSQL_ROOT_PASSWORD" -N -B -e "SELECT COUNT(*) FROM sbtest.sbtest1"' 2>/dev/null)
   [ "$c" = "1000000" ] || { echo "$n no tiene el dataset completo (filas: ${c:-ninguna}). Ejecuta el prepare del README."; exit 1; }
 done
 
-OUT=resultados/fase6; mkdir -p "$OUT"
+OUT=${OUT:-resultados/fase6}; mkdir -p "$OUT"
 CSV="$OUT/resumen.csv"
 echo "escenario,carga,hilos,tps,qps,avg_ms,p95_ms,max_ms,errores" > "$CSV"
-LAGLOG="$OUT/lag.csv"; echo "escenario,segundo,slave1,slave2" > "$LAGLOG"
+LAGLOG="$OUT/lag.csv"; echo "escenario,segundo,$(echo $SLAVES | sed 's/mysql-//g; s/ /,/g')" > "$LAGLOG"
 
 cleanup() {
   kill $LAGPID 2>/dev/null
@@ -76,12 +82,15 @@ parse() {  # $1=archivo $2=escenario $3=carga $4=hilos -> imprime fila y la guar
           printf "%s,%s,%s,%s,%s,%s,%s,%s,%s\n", s, c, h, t, q, a, p, m, e >> csv }' "$1"
 }
 
-lag_sampler() {  # $1=escenario: muestrea Seconds_Behind_Master cada 5 s hasta que se mate
-  local s=0 l1 l2
+lag_sampler() {  # $1=escenario: muestrea Seconds_Behind_Master de cada esclavo cada 5 s hasta que se mate
+  local s=0 n l fila
   while true; do
-    l1=$(docker exec mysql-slave1 sh -c 'mysql -uroot -p"$MYSQL_ROOT_PASSWORD" -e "SHOW SLAVE STATUS\G"' 2>/dev/null | sed -n 's/^ *Seconds_Behind_Master: *//p')
-    l2=$(docker exec mysql-slave2 sh -c 'mysql -uroot -p"$MYSQL_ROOT_PASSWORD" -e "SHOW SLAVE STATUS\G"' 2>/dev/null | sed -n 's/^ *Seconds_Behind_Master: *//p')
-    echo "$1,$s,${l1:-caído},${l2:-caído}" >> "$LAGLOG"
+    fila="$1,$s"
+    for n in $SLAVES; do
+      l=$(docker exec $n sh -c 'mysql -uroot -p"$MYSQL_ROOT_PASSWORD" -e "SHOW SLAVE STATUS\G"' 2>/dev/null | sed -n 's/^ *Seconds_Behind_Master: *//p')
+      fila="$fila,${l:-caído}"
+    done
+    echo "$fila" >> "$LAGLOG"
     s=$((s+5)); sleep 5
   done
 }
@@ -91,7 +100,7 @@ wait_sync() {  # espera a que los esclavos encendidos tengan todos los GTID del 
   while [ $(( $(date +%s) - t0 )) -lt 300 ]; do
     g=$(docker exec mysql-master sh -c 'mysql -uroot -p"$MYSQL_ROOT_PASSWORD" -N -B -e "SELECT @@global.gtid_executed"' 2>/dev/null | tr -d '\n')
     ok=1
-    for n in mysql-slave1 mysql-slave2; do
+    for n in $SLAVES; do
       [ "$(docker inspect -f '{{.State.Running}}' $n)" = true ] || continue
       [ "$(docker exec $n sh -c "mysql -uroot -p\"\$MYSQL_ROOT_PASSWORD\" -N -B -e \"SELECT GTID_SUBSET('$g', @@global.gtid_executed)\"" 2>/dev/null)" = 1 ] || ok=0
     done
@@ -123,7 +132,7 @@ mixta_dividida() {  # $1=escenario
   parse "$OUT/$1-escritura.log" "$1" "  escrituras -> :3307" "$WTHREADS"
 }
 
-echo "Sysbench Fase 6 | $THREADS hilos (dividida: $RTHREADS lectura + $WTHREADS escritura) | ${TIME}s por prueba | 1 tabla x 1.000.000 filas"
+echo "Sysbench Fase 6 | $NSL esclavos | $THREADS hilos (dividida: $RTHREADS lectura + $WTHREADS escritura) | ${TIME}s por prueba | 1 tabla x 1.000.000 filas"
 echo
 printf "%-4s %-26s %5s %8s %9s %8s %8s %9s %5s\n" "Esc" "Carga" "Hilos" "TPS" "QPS" "avg(ms)" "p95(ms)" "max(ms)" "err"
 printf '%.0s-' {1..92}; echo
@@ -132,7 +141,7 @@ printf '%.0s-' {1..92}; echo
 sb oltp_read_only nginx-lb 3308 "$THREADS" 20 >/dev/null
 
 echo "# Todo sano"
-lectura A1 "Lectura vía NGINX :3308" nginx-lb 3308
+lectura A1 "Lectura vía NGINX :3308 ($NSL esc.)" nginx-lb 3308
 lectura A2 "Lectura directo al maestro" mysql-master 3306
 lectura A3 "Lectura directo a 1 esclavo" mysql-slave1 3306
 mixta_nginx B1; wait_sync >/dev/null
@@ -141,7 +150,7 @@ mixta_dividida B2; wait_sync >/dev/null
 echo "# slave1 caído"
 docker stop mysql-slave1 >/dev/null
 sb oltp_read_only nginx-lb 3308 "$THREADS" 15 >/dev/null   # deja que NGINX detecte y excluya el nodo
-lectura C1 "Lectura vía NGINX (1 vivo)" nginx-lb 3308
+lectura C1 "Lectura vía NGINX ($((NSL-1)) vivos)" nginx-lb 3308
 mixta_dividida C2
 
 echo
@@ -152,8 +161,9 @@ echo "slave1 tardó ${SEG}s en ponerse al día (GTID) tras las escrituras hechas
 
 echo
 echo "# Retraso de replicación (Seconds_Behind_Master) durante las escrituras: máximo por escenario"
-awk -F, 'NR>1 { for (i=3;i<=4;i++) if ($i ~ /^[0-9]+$/ && $i+0 > m[$1","i]) m[$1","i]=$i+0; seen[$1]=1 }
-         END { for (s in seen) printf "  %s  slave1=%ss  slave2=%ss\n", s, m[s",3"]+0, m[s",4"]+0 }' "$LAGLOG" | sort
+awk -F, 'NR==1 { for (i=3;i<=NF;i++) nom[i]=$i; nc=NF; next }
+         { for (i=3;i<=NF;i++) if ($i ~ /^[0-9]+$/ && $i+0 > m[$1","i]) m[$1","i]=$i+0; seen[$1]=1 }
+         END { for (s in seen) { l="  " s; for (i=3;i<=nc;i++) l=l "  " nom[i] "=" m[s","i]+0 "s"; print l } }' "$LAGLOG" | sort
 
 echo
 echo "TPS/QPS: más alto es mejor. Latencia: más baja es mejor. Logs crudos y CSV en $OUT/"
