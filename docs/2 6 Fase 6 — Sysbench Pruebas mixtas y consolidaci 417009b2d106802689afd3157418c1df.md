@@ -216,6 +216,118 @@ Las dos fases coinciden: ≈8 % menos de TPS en la Fase 6 (variación normal de 
 
 ---
 
+---
+
+## Ampliación a 6 esclavos
+
+Para ver cómo escala el sistema, se añadieron 4 esclavos (`mysql-slave3` a `mysql-slave6`) a los 2 existentes y se repitieron los benchmarks de las fases 5 y 6 sobre la misma máquina (12 núcleos). Los resultados de las secciones anteriores son los de **2 esclavos**; los de esta sección, los de **6**.
+
+### Cómo se añadieron los 4 esclavos
+
+Cada esclavo nuevo es copia de la configuración de `mysql-slave1`/`mysql-slave2`: mismo servicio en el compose, mismo script de inicialización (`mysql/slave-init/`) y un `my.cnf` propio con su `server-id`.
+
+| Nodo | `server-id` | Archivos |
+| --- | --- | --- |
+| `mysql-slave3` | 4 | `mysql/slave3/my.cnf`, volumen `mysql_slave3_data` |
+| `mysql-slave4` | 5 | `mysql/slave4/my.cnf`, volumen `mysql_slave4_data` |
+| `mysql-slave5` | 6 | `mysql/slave5/my.cnf`, volumen `mysql_slave5_data` |
+| `mysql-slave6` | 7 | `mysql/slave6/my.cnf`, volumen `mysql_slave6_data` |
+
+Cambios en el repositorio: `docker-compose.yml` (4 servicios nuevos y `nginx-lb` depende de los 6), `nginx/nginx.conf` (los 4 nuevos en el upstream de lectura, con `least_conn`, `max_fails=2` y `fail_timeout=10s`), `mysql/slave-init/01-replication.sh`, `scripts/verify-replication.sh` (revisa los 6) y los dos scripts de benchmark (detectan solos cuántos esclavos hay).
+
+```bash
+docker compose up -d mysql-slave3 mysql-slave4 mysql-slave5 mysql-slave6
+docker compose rm -sf mysql-slave3 mysql-slave4 mysql-slave5 mysql-slave6
+docker volume rm proyecto-st_mysql_slave3_data proyecto-st_mysql_slave4_data proyecto-st_mysql_slave5_data proyecto-st_mysql_slave6_data
+docker compose up -d mysql-slave3 mysql-slave4 mysql-slave5 mysql-slave6
+docker exec nginx-lb nginx -s reload
+./scripts/verify-replication.sh
+```
+
+- Primer `up -d`: los 4 salieron con `Exited (1)` (ver "Problemas comunes", problema de `super_read_only`).
+- `compose rm -sf` y `docker volume rm`: borran solo los contenedores y volúmenes de los 4 esclavos nuevos, que quedaron a medio inicializar. **Nunca el volumen del maestro ni los de slave1/slave2.**
+- Segundo `up -d`, ya con la configuración corregida: arrancan, se conectan al maestro por GTID y descargan todo su historial (incluido el millón de filas de `sbtest1`).
+- `nginx -s reload`: NGINX relee `nginx.conf` sin cortar conexiones, y desde ese momento reparte entre los 6.
+- `verify-replication.sh`: justo después daba `FALLO` en los 4 nuevos con `Seconds_Behind_Master` ≈ 18.000 s: era el retraso histórico mientras reproducían las transacciones antiguas. Se repitió hasta que dio `RESULTADO: OK` en los 6 (`GTID al día: sí`, retraso 0).
+
+Comprobaciones de que quedaron bien:
+
+```bash
+for n in mysql-slave3 mysql-slave4 mysql-slave5 mysql-slave6; do
+  docker exec $n sh -c 'mysql -uroot -p"$MYSQL_ROOT_PASSWORD" -N -B -e "SELECT @@server_id,@@read_only,@@super_read_only,(SELECT COUNT(*) FROM sbtest.sbtest1)"' 2>/dev/null
+done
+for i in $(seq 12); do
+  docker exec mysql-master sh -c 'mysql -h nginx-lb -P 3308 -uroot -p"$MYSQL_ROOT_PASSWORD" -N -B -e "SELECT @@server_id"' 2>/dev/null
+done | sort | uniq -c
+```
+
+- Primer bucle: cada nodo nuevo devuelve su `server_id`, `read_only=1`, `super_read_only=1` y `1000000` filas.
+- Segundo bucle: 12 conexiones por el 3308; cada `server_id` (2 a 7) salió 2 veces, es decir, `least_conn` reparte parejo entre los 6.
+
+### Adaptación de los scripts
+
+- `benchmark-mixto.sh` y `benchmark-lectura.sh` detectan los esclavos que existan (`mysql-slaveN`) en lugar de tener `slave1`/`slave2` escritos a mano, así que sirven con cualquier cantidad.
+- El muestreo de retraso (`lag.csv`) tiene una columna por esclavo y la espera de GTID entre escenarios los cubre a todos.
+- `benchmark-mixto.sh` acepta `OUT=<carpeta>` para elegir dónde guarda los resultados (por defecto `resultados/fase6/`).
+- En los escenarios C se sigue apagando solo `slave1`, es decir, quedan **5 esclavos vivos**.
+
+### Comandos de los benchmarks con 6 esclavos
+
+```bash
+OUT=/tmp/humo ./scripts/benchmark-mixto.sh -d 5          # corrida de humo, números descartados
+./scripts/benchmark-lectura.sh -u -t 10 -d 60            # Fase 5, 10 hilos
+./scripts/benchmark-lectura.sh -u -t 64 -d 30            # Fase 5, 64 hilos
+./scripts/benchmark-lectura.sh -u -t 128 -d 30           # Fase 5, 128 hilos
+OUT=resultados/fase6-6esclavos-corrida1 ./scripts/benchmark-mixto.sh
+OUT=resultados/fase6-6esclavos-corrida2 ./scripts/benchmark-mixto.sh
+```
+
+- `-u`: incluye "un solo esclavo vía NGINX" levantando un NGINX temporal que apunta solo a slave1.
+- Resultados en `resultados/fase5-6esclavos/` y `resultados/fase6-6esclavos-corrida1|2/`.
+
+### Resultados Fase 6 con 6 esclavos (10 hilos, 60 s, 0 errores)
+
+| Esc. | Escenario | TPS c1 | TPS c2 | TPS prom. | avg (ms) c2 | p95 (ms) c2 | 2 esclavos (prom.) | Variación |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| A1 | Lectura vía NGINX :3308 | 3.457 | 3.114 | 3.285 | 3,21 | 5,00 | 4.754 | −31 % |
+| A2 | Lectura directo al maestro | 6.387 | 6.097 | 6.242 | 1,64 | 2,39 | 7.440 | −16 % |
+| A3 | Lectura directo a 1 esclavo | 6.273 | 6.101 | 6.187 | 1,64 | 2,39 | 7.333 | −16 % |
+| B1 | Mixta `oltp_read_write` vía :3307 | 393 | 369 | 381 | 27,10 | 41,85 | 822 | −54 % |
+| B2 | Dividida: lecturas (8 hilos) | 2.034 | 2.334 | 2.184 | 3,42 | 5,37 | 2.991 | −27 % |
+| B2 | Dividida: escrituras (2 hilos) | 123 | 139 | 131 | 14,39 | 23,10 | 225 | −42 % |
+| C1 | Lectura vía NGINX, slave1 caído (5 vivos) | 3.411 | 4.075 | 3.743 | 2,45 | 3,13 | 4.545 | −18 % |
+| C2 | Dividida, slave1 caído: lecturas | 1.817 | 2.236 | 2.026 | 3,57 | 5,57 | 2.774 | −27 % |
+| C2 | Dividida, slave1 caído: escrituras | 142 | 155 | 149 | 12,86 | 20,37 | 261 | −43 % |
+
+| Medición | Resultado |
+| --- | --- |
+| Retraso de replicación máximo (`Seconds_Behind_Master`) | 3 s en cualquier esclavo (B2 y C2, las dos corridas) |
+| Puesta al día de slave1 al volver (GTID) | 2 s (corrida 1) y 0 s (corrida 2) |
+
+### Resultados Fase 5 con 6 esclavos (solo lectura, TPS)
+
+| Hilos | Vía NGINX, 6 esclavos | Vía NGINX, 1 esclavo | Directo a 1 esclavo | Vía NGINX, 2 esclavos (Fase 5 original) |
+| --- | --- | --- | --- | --- |
+| 10 (60 s) | 3.431 · avg 2,91 · p95 4,10 | 3.132 · avg 3,19 · p95 5,67 | 6.351 · avg 1,57 · p95 2,22 | 5.174 |
+| 64 (30 s) | 3.955 · avg 16,16 · p95 25,74 | 4.114 · avg 15,55 · p95 29,19 | 6.259 · avg 10,22 · p95 20,37 | 5.136 |
+| 128 (30 s) | 3.966 · avg 32,24 · p95 53,85 | 4.465 · avg 28,65 · p95 56,84 | 6.320 · avg 20,24 · p95 44,17 | 4.873 |
+
+### Conclusiones de la ampliación
+
+1. **Pasar de 2 a 6 esclavos no mejoró el rendimiento de lectura; lo empeoró.** Vía NGINX bajó de ≈4.750 a ≈3.300 TPS (−31 %) y con 6 esclavos rinde prácticamente igual que con 1 solo esclavo detrás del proxy (3.431 frente a 3.132 TPS con 10 hilos; con 64 y 128 hilos el de 1 esclavo incluso rindió algo más). Es la misma conclusión de las fases 5 y 6: todos los contenedores comparten la CPU del equipo, así que un esclavo más reparte la capacidad existente en vez de añadirla.
+2. **Todo el sistema rindió menos, hasta el acceso directo a un nodo** (≈7.330 → ≈6.190 TPS, −16 %). Hipótesis, sin aislar con una prueba adicional: el maestro tiene ahora 6 conexiones de replicación y hay 6 instancias de MySQL compitiendo por la misma CPU y memoria.
+3. **El costo del proxy subió** de −35 % con 2 esclavos a −47 % con 6 (3.285 frente a 6.187 TPS).
+4. **Las escrituras sufren más:** la mixta completa (B1) bajó de ≈822 a ≈381 TPS y las escrituras de la prueba dividida de ≈225 a ≈131 TPS. Todas las escrituras pasan por un único maestro, que ahora además sirve el binlog a 6 esclavos.
+5. **La replicación aguanta:** retraso máximo de 3 s y puesta al día de slave1 en 0 a 2 s, con 0 errores en todas las pruebas. Con slave1 caído, las lecturas siguen funcionando con los 5 restantes (C1 ≈ 3.743 TPS, incluso por encima de A1 ≈ 3.285; la diferencia está dentro del ruido entre corridas).
+6. **El ruido es alto:** A1 varió un 10 % y C1 un 19 % entre corridas. No conviene sacar conclusiones de diferencias menores a ≈15 %.
+7. **Cuándo sí servirían más esclavos:** cuando cada uno corra en hardware propio. En un solo host, el balanceo de lectura solo aporta disponibilidad (si uno cae, los demás atienden), no throughput.
+
+### Limitaciones de la ampliación
+
+- La comparación con 2 esclavos usa datos medidos horas antes, con la máquina en otro estado; la diferencia absoluta puede incluir variación del equipo, no solo el efecto de los esclavos.
+- Solo dos corridas por escenario, una sola carga de 10 hilos en la Fase 6.
+- No se probó un esclavo con la replicación rota ni la caída de varios esclavos a la vez.
+
 ## Problemas comunes y solución
 
 ### 1. Ningún archivo del repo crea el usuario `replicador`
@@ -236,7 +348,13 @@ Las dos fases coinciden: ≈8 % menos de TPS en la Fase 6 (variación normal de 
 - **Causa:** la Fase 6 se había medido en otra máquina (8 núcleos, WSL2, 7,4 GB), no comparable con la de la Fase 5.
 - **Solución:** descartar esos resultados y repetir toda la fase en la máquina de la Fase 5. Ahora ambas fases coinciden (ver "Coherencia entre Fase 5 y Fase 6").
 
-### 4. Detalles que no son errores
+### 4. Los 4 esclavos nuevos salen con `Exited (1)` (ampliación a 6 esclavos)
+
+- **Síntoma:** al levantar `mysql-slave3` a `mysql-slave6` por primera vez, los cuatro terminan en `Exited (1)`. El log acaba en `ERROR 1290 (HY000) at line 1: The MySQL server is running with the --super-read-only option so it cannot execute this statement`.
+- **Causa:** el `my.cnf` copiado de slave1 trae `super_read_only=1`. En un volumen vacío la imagen de MySQL arranca un servidor temporal para fijar la contraseña de `root`, y con esa opción activa no puede escribir. Es el mismo problema de la Fase 5.
+- **Solución:** en los `my.cnf` de slave3 a slave6 se quitaron `read_only` y `super_read_only`, y el script de inicialización (`01-replication.sh`) los activa al final con `SET PERSIST read_only=ON; SET PERSIST super_read_only=ON;`. `SET PERSIST` los guarda en `mysqld-auto.cnf` dentro del volumen y sobreviven a reinicios. Se borraron los volúmenes de los 4 nodos y se levantaron de nuevo. slave1 y slave2 no se tocaron.
+
+### 5. Detalles que no son errores
 
 - El mensaje `Using a password on the command line interface can be insecure` de `mysql` es solo un aviso; se descarta con `2>/dev/null`.
 - Los escenarios con `slave1` caído pueden mostrar `slave1=caído` en `lag.csv`; es esperado, no una falla del muestreador.

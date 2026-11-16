@@ -305,6 +305,37 @@ nproc
 
 ---
 
+---
+
+## Repetición con 6 esclavos
+
+Después de la Fase 6 se añadieron 4 esclavos más (`mysql-slave3` a `mysql-slave6`) para ver cómo se comporta la lectura con 6 nodos. Los pasos para crearlos, el problema que apareció y los resultados de la Fase 6 con 6 esclavos están en el documento de la Fase 6 (sección "Ampliación a 6 esclavos"). Aquí se resume lo que corresponde a la Fase 5 (solo lectura, mismo equipo de 12 núcleos).
+
+El script `scripts/benchmark-lectura.sh` ahora detecta cuántos esclavos hay y etiqueta la fila "Vía NGINX (N esclavos)". Comandos ejecutados:
+
+```bash
+./scripts/benchmark-lectura.sh -u -t 10 -d 60
+./scripts/benchmark-lectura.sh -u -t 64 -d 30
+./scripts/benchmark-lectura.sh -u -t 128 -d 30
+```
+
+- `-t`: hilos (conexiones simultáneas). `-d`: segundos por prueba. `-u`: añade la medición de un solo esclavo vía NGINX con un NGINX temporal.
+- La salida completa quedó en `resultados/fase5-6esclavos/salida.txt`.
+
+| Hilos | Vía NGINX, 6 esclavos | Vía NGINX, 1 esclavo | Directo a 1 esclavo | Vía NGINX, 2 esclavos (resultado original) |
+| --- | --- | --- | --- | --- |
+| 10 (60 s) | 3.431 TPS · avg 2,91 · p95 4,10 | 3.132 TPS · avg 3,19 · p95 5,67 | 6.351 TPS · avg 1,57 · p95 2,22 | 5.174 TPS |
+| 64 (30 s) | 3.955 TPS · avg 16,16 · p95 25,74 | 4.114 TPS · avg 15,55 · p95 29,19 | 6.259 TPS · avg 10,22 · p95 20,37 | 5.136 TPS |
+| 128 (30 s) | 3.966 TPS · avg 32,24 · p95 53,85 | 4.465 TPS · avg 28,65 · p95 56,84 | 6.320 TPS · avg 20,24 · p95 44,17 | 4.873 TPS |
+
+0 errores en todas las pruebas.
+
+Lectura de los resultados:
+
+- **Con 6 esclavos el balanceador no rinde más que con 1.** A 10 hilos, 3.431 frente a 3.132 TPS; con 64 y 128 hilos el de 1 esclavo incluso rindió algo más. Confirma lo de esta fase: todos los contenedores comparten la misma CPU, así que más esclavos no suman capacidad.
+- **Rinde menos que con 2 esclavos** (3.431 frente a 5.174 TPS a 10 hilos), y también baja el acceso directo (6.351 frente a 8.014 TPS). Hipótesis, sin aislar: 6 MySQL y 6 flujos de replicación compiten por la misma CPU y memoria. Además, las medidas con 2 esclavos se tomaron en otro momento, así que parte de la diferencia puede ser variación del equipo.
+- **El costo del proxy sube** de −35 % con 2 esclavos (5.174 frente a 8.014) a −46 % con 6 (3.431 frente a 6.351).
+
 ## Problemas comunes y solución
 
 ### 1. Los esclavos no arrancan: `ERROR 1290 ... running with the --super-read-only option`
@@ -343,6 +374,12 @@ nproc
 - **Mayor TPS directo que por NGINX:** es normal; ver la interpretación (costo del proxy y hardware compartido).
 - **Latencia que se dispara al subir los hilos sin que suba el TPS:** es la saturación del servidor; los hilos extra solo hacen cola.
 - **Un TPS que varía entre corridas:** depende de la carga del equipo en ese momento. Usar siempre un calentamiento y los mismos parámetros para comparar.
+
+### 7. Los 4 esclavos nuevos salen con `Exited (1)` (repetición con 6 esclavos)
+
+- **Síntoma:** al levantar `mysql-slave3` a `mysql-slave6` por primera vez, los cuatro terminan en `Exited (1)`. El log acaba en `ERROR 1290 (HY000) at line 1: The MySQL server is running with the --super-read-only option so it cannot execute this statement`.
+- **Causa:** el `my.cnf` copiado de slave1 trae `super_read_only=1`. En un volumen vacío la imagen de MySQL arranca un servidor temporal para fijar la contraseña de `root`, y con esa opción activa no puede escribir. Es el mismo problema de la Fase 5.
+- **Solución:** en los `my.cnf` de slave3 a slave6 se quitaron `read_only` y `super_read_only`, y el script de inicialización (`01-replication.sh`) los activa al final con `SET PERSIST read_only=ON; SET PERSIST super_read_only=ON;`. `SET PERSIST` los guarda en `mysqld-auto.cnf` dentro del volumen y sobreviven a reinicios. Se borraron los volúmenes de los 4 nodos y se levantaron de nuevo. slave1 y slave2 no se tocaron.
 
 ---
 

@@ -52,6 +52,7 @@ Repartir las **lecturas** entre varios nodos MySQL esclavos usando NGINX en modo
 | `mysql_net` | Red interna: los contenedores se encuentran por nombre de servicio | Completo (Fase 1) |
 | `mysql_master_data` | Volumen persistente: los datos sobreviven a `down`/`up` | Completo (Fase 1) |
 | `mysql-slave1` / `mysql-slave2` | Copian al maestro y atienden lecturas (`server-id` 2 y 3, `read_only=1`, `super_read_only=1`) | Completo (Fase 2) |
+| `mysql-slave3` a `mysql-slave6` | Cuatro esclavos adicionales con la misma configuración (`server-id` 4 a 7) para probar con 6 nodos | Ampliación (ver más abajo) |
 | `nginx-lb` | NGINX en modo stream: puerto 3307 → maestro, puerto 3308 → esclavos con `least_conn` | Completo (Fase 3) |
 | `sysbench` | Generador de carga para los benchmarks; solo corre bajo demanda (perfil `bench`) | Completo (Fase 5) |
 
@@ -92,7 +93,7 @@ aplicación elige a cuál conectarse.
 | Puerto (host) | Destino | Uso |
 |---|---|---|
 | `3307` | `mysql-master:3306` | Escrituras (siempre al maestro) |
-| `3308` | `mysql-slave1:3306` / `mysql-slave2:3306` | Lecturas (balanceadas) |
+| `3308` | `mysql-slave1:3306` … `mysql-slave6:3306` | Lecturas (balanceadas) |
 
 ### Algoritmo: `least_conn`
 
@@ -343,6 +344,33 @@ Extras medidos en el mismo script:
 - **Limitaciones**: una máquina, dos corridas por escenario, cliente y servidores en el mismo host, un solo dataset de
   1 tabla y una sola carga de 10 hilos.
 
+## Ampliación a 6 esclavos
+
+Se añadieron `mysql-slave3` a `mysql-slave6` (`server-id` 4 a 7) con la misma configuración que los dos primeros, y se
+incluyeron en el upstream de lectura de NGINX. Para crearlos: `docker compose up -d` y `docker exec nginx-lb nginx -s reload`;
+después `./scripts/verify-replication.sh` (revisa los 6) hasta que dé `OK` en todos (al principio descargan el historial
+completo del maestro y pueden tardar unos minutos).
+
+Los `my.cnf` de los esclavos 3 a 6 **no** llevan `read_only`/`super_read_only`: con un volumen vacío impiden que la imagen
+de MySQL fije la contraseña de `root` (`ERROR 1290`). Los activa `mysql/slave-init/01-replication.sh` al final de la
+inicialización con `SET PERSIST`, y sobreviven a reinicios.
+
+Los dos scripts de benchmark detectan solos cuántos esclavos hay. `benchmark-mixto.sh` acepta `OUT=<carpeta>` para elegir
+dónde guarda los resultados. Resultados con 6 esclavos (promedio de 2 corridas, mismo equipo de 12 núcleos):
+
+| Escenario | 2 esclavos | 6 esclavos |
+|---|---|---|
+| Lectura vía NGINX, 10 hilos (TPS) | 4.754 | 3.285 |
+| Lectura directo a 1 esclavo (TPS) | 7.333 | 6.187 |
+| Mixta todo al maestro, B1 (TPS) | 822 | 381 |
+| Dividida: lecturas / escrituras (TPS) | 2.991 / 225 | 2.184 / 131 |
+| Costo del proxy | −35 % | −47 % |
+
+**Conclusión:** en un solo host, pasar de 2 a 6 esclavos no mejora el throughput (con 6, la lectura vía NGINX rinde casi lo
+mismo que con 1 solo esclavo detrás del proxy) y empeora el rendimiento general, porque los 6 MySQL y sus flujos de replicación
+compiten por la misma CPU. El balanceo aporta disponibilidad, no capacidad, mientras todo comparta hardware. Detalle, comandos
+y problemas en `docs/` (Fase 5 y Fase 6) y datos crudos en `resultados/fase5-6esclavos/` y `resultados/fase6-6esclavos-corrida*/`.
+
 ## Estructura del repositorio
 
 ```
@@ -352,6 +380,7 @@ Extras medidos en el mismo script:
 │   ├── master/my.cnf
 │   ├── slave1/my.cnf
 │   ├── slave2/my.cnf
+│   ├── slave3/my.cnf  (… slave4, slave5, slave6)
 │   └── slave-init/01-replication.sh
 ├── nginx/
 │   └── nginx.conf
