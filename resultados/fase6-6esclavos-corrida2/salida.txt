@@ -1,0 +1,24 @@
+Sysbench Fase 6 | 6 esclavos | 10 hilos (dividida: 8 lectura + 2 escritura) | 60s por prueba | 1 tabla x 1.000.000 filas
+
+Esc  Carga                      Hilos      TPS       QPS  avg(ms)  p95(ms)   max(ms)   err
+--------------------------------------------------------------------------------------------
+# Todo sano
+A1   Lectura vía NGINX :3308 (6 esc.)    10  3113.75  49819.97     3.21     5.00     19.01     0
+A2   Lectura directo al maestro    10  6097.28  97556.46     1.64     2.39     20.05     0
+A3   Lectura directo a 1 esclavo    10  6101.06  97616.95     1.64     2.39     20.18     0
+B1   Mixta r/w :3307 (maestro)     10   368.90   7378.08    27.10    41.85    219.88     0
+B2     lecturas  -> :3308           8  2334.45  37351.28     3.42     5.37    262.87     0
+B2     escrituras -> :3307          2   138.95    833.71    14.39    23.10    405.07     0
+# slave1 caído
+C1   Lectura vía NGINX (5 vivos)    10  4074.74  65195.91     2.45     3.13     19.00     0
+C2     lecturas  -> :3308           8  2235.95  35775.17     3.57     5.57    181.43     0
+C2     escrituras -> :3307          2   155.39    932.32    12.86    20.37    413.73     0
+
+# Reincorporación de slave1
+slave1 tardó 0s en ponerse al día (GTID) tras las escrituras hechas mientras estaba caído
+
+# Retraso de replicación (Seconds_Behind_Master) durante las escrituras: máximo por escenario
+  B2  slave1=1s  slave2=2s  slave3=1s  slave4=1s  slave5=2s  slave6=1s
+  C2  slave1=1s  slave2=1s  slave3=1s  slave4=1s  slave5=1s  slave6=1s
+
+TPS/QPS: más alto es mejor. Latencia: más baja es mejor. Logs crudos y CSV en resultados/fase6-6esclavos-corrida2/

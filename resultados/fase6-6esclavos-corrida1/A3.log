@@ -1,0 +1,73 @@
+ Container mysql-slave4 Running 
+ Container mysql-slave2 Running 
+ Container mysql-slave5 Running 
+ Container mysql-slave6 Running 
+ Container nginx-lb Running 
+ Container mysql-slave3 Running 
+ Container mysql-slave1 Running 
+ Container mysql-master Running 
+ Container mysql-master Waiting 
+ Container mysql-master Waiting 
+ Container mysql-master Waiting 
+ Container mysql-master Waiting 
+ Container mysql-master Waiting 
+ Container mysql-master Waiting 
+ Container mysql-master Healthy 
+ Container mysql-master Healthy 
+ Container mysql-master Healthy 
+ Container mysql-master Healthy 
+ Container mysql-master Healthy 
+ Container mysql-master Healthy 
+ Container mysql-slave6 Waiting 
+ Container mysql-master Waiting 
+ Container mysql-slave1 Waiting 
+ Container mysql-slave2 Waiting 
+ Container mysql-slave3 Waiting 
+ Container mysql-slave4 Waiting 
+ Container mysql-slave5 Waiting 
+ Container mysql-slave5 Healthy 
+ Container mysql-slave6 Healthy 
+ Container mysql-slave1 Healthy 
+ Container mysql-master Healthy 
+ Container mysql-slave2 Healthy 
+ Container mysql-slave3 Healthy 
+ Container mysql-slave4 Healthy 
+ Container proyecto-st-sysbench-run-dad1af03f673 Creating 
+ Container proyecto-st-sysbench-run-dad1af03f673 Created 
+sysbench 1.0.17 (using bundled LuaJIT 2.1.0-beta2)
+
+Running the test with following options:
+Number of threads: 10
+Initializing random number generator from current time
+
+
+Initializing worker threads...
+
+Threads started!
+
+SQL statistics:
+    queries performed:
+        read:                            5270006
+        write:                           0
+        other:                           752858
+        total:                           6022864
+    transactions:                        376429 (6273.44 per sec.)
+    queries:                             6022864 (100375.06 per sec.)
+    ignored errors:                      0      (0.00 per sec.)
+    reconnects:                          0      (0.00 per sec.)
+
+General statistics:
+    total time:                          60.0021s
+    total number of events:              376429
+
+Latency (ms):
+         min:                                    0.69
+         avg:                                    1.59
+         max:                                   17.31
+         95th percentile:                        2.22
+         sum:                               599058.24
+
+Threads fairness:
+    events (avg/stddev):           37642.9000/216.58
+    execution time (avg/stddev):   59.9058/0.00
+

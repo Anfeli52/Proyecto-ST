@@ -1,0 +1,35 @@
+== Fase 5, 6 esclavos, 10 hilos 60 s
+Sysbench oltp_read_only | 10 hilos | 60s por prueba | 1 tabla x 1.000.000 filas
+
+Destino                                 TPS        QPS   avg(ms)   p95(ms)   max(ms)    err
+--------------------------------------------------------------------------------------------
+Vía NGINX (6 esclavos)              3431.43   54902.91      2.91      4.10     22.80      0
+Directo a 1 esclavo (slave1)        6351.02  101616.39      1.57      2.22     18.62      0
+Vía NGINX (1 esclavo)               3132.42   50118.64      3.19      5.67     21.40      0
+
+TPS/QPS: más alto es mejor. Latencia (avg, p95, max): más baja es mejor.
+Todos los contenedores comparten la CPU del host: ver README (limitaciones).
+
+== Fase 5, 6 esclavos, 64 hilos 30 s
+Sysbench oltp_read_only | 64 hilos | 30s por prueba | 1 tabla x 1.000.000 filas
+
+Destino                                 TPS        QPS   avg(ms)   p95(ms)   max(ms)    err
+--------------------------------------------------------------------------------------------
+Vía NGINX (6 esclavos)              3955.42   63286.65     16.16     25.74     53.68      0
+Directo a 1 esclavo (slave1)        6259.01  100144.09     10.22     20.37     75.71      0
+Vía NGINX (1 esclavo)               4114.00   65824.06     15.55     29.19     70.03      0
+
+TPS/QPS: más alto es mejor. Latencia (avg, p95, max): más baja es mejor.
+Todos los contenedores comparten la CPU del host: ver README (limitaciones).
+
+== Fase 5, 6 esclavos, 128 hilos 30 s
+Sysbench oltp_read_only | 128 hilos | 30s por prueba | 1 tabla x 1.000.000 filas
+
+Destino                                 TPS        QPS   avg(ms)   p95(ms)   max(ms)    err
+--------------------------------------------------------------------------------------------
+Vía NGINX (6 esclavos)              3966.41   63462.54     32.24     53.85    112.11      0
+Directo a 1 esclavo (slave1)        6319.72  101115.53     20.24     44.17    126.47      0
+Vía NGINX (1 esclavo)               4465.25   71443.94     28.65     56.84    170.84      0
+
+TPS/QPS: más alto es mejor. Latencia (avg, p95, max): más baja es mejor.
+Todos los contenedores comparten la CPU del host: ver README (limitaciones).
